@@ -1,0 +1,58 @@
+{
+  "_comment": "TypeSafe System One questions for Jev triage. $market is substituted. Keys are question ids used by pipeline/triage.py. Keep one dimension per question (docs.typesafe.ai/primitives).",
+  "value": {
+    "type": "score",
+    "instructions": "How useful is this Telegram post as the factual basis for an original X post for a $market audience?",
+    "criteria": [
+      "Spam, ads, giveaways, greetings or personal chat; nothing a reader could use",
+      "A vague claim or opinion with almost no concrete facts",
+      "Some concrete facts, but niche or needing a lot of context",
+      "Concrete, newsworthy or practically useful facts a broad audience would care about"
+    ]
+  },
+  "content_type": {
+    "type": "choice",
+    "instructions": "What kind of content is this post?",
+    "criteria": {
+      "news": "A report of a recent event, release or announcement",
+      "practical": "A how-to, tip, or directly actionable information",
+      "analysis": "Data, research findings, or an explanation of how something works",
+      "promo": "An advertisement, sales pitch, referral link, giveaway, or channel promotion",
+      "opinion": "Commentary or opinion that adds no new facts",
+      "chat": "A personal message, greeting, or conversation",
+      "other": null
+    }
+  },
+  "promotional": {
+    "type": "noul",
+    "instructions": "Is this post primarily trying to sell, advertise, or promote something?",
+    "criteria": {
+      "true": "The main purpose is promotion: ads, discounts, referral links, paid groups, giveaways",
+      "false": "The main purpose is to inform, even if a product or company is mentioned"
+    }
+  },
+  "risky": {
+    "type": "noul",
+    "instructions": "Would repeating this content on X carry legal, safety or reputational risk?",
+    "criteria": {
+      "true": "It gives medical, legal or financial advice, contains graphic content, or accuses identifiable people of wrongdoing",
+      "false": "It is ordinary information with no such risk"
+    }
+  },
+  "unverified": {
+    "type": "noul",
+    "instructions": "Does the post present rumors or unverified claims as established fact?",
+    "criteria": {
+      "true": "Claims are anonymous, speculative, or unsourced but stated as fact",
+      "false": "Claims are attributed, verifiable, or clearly marked as opinion or rumor"
+    }
+  },
+  "media_useful": {
+    "type": "noul",
+    "instructions": "Judging from the text and the attachment description, would the attached media likely add information to a post about this text?",
+    "criteria": {
+      "true": "The media likely shows the subject, data, a document, or a product discussed",
+      "false": "The media is likely decorative, a logo, a meme, or unrelated"
+    }
+  }
+}

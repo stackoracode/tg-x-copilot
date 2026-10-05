@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <div class="stats">
+    <a class="pill" href="/">all</a>
+    {% for s, n in counts.items() %}
+      <a class="pill s-{{ s }}" href="/?status_filter={{ s }}">{{ s }}: {{ n }}</a>
+    {% endfor %}
+  </div>
+  <p class="muted">
+    Queue: {{ workers.queued }} queued · busy workers: {{ workers.busy|length }}/{{ workers.workers }}
+    · R2 assets: {{ stored_mb }} MB / {{ budget_gb }} GB budget
+    · Telegram: {% if telegram %}<span class="ok">connected</span>{% else %}<span class="bad">disconnected</span>{% endif %}
+  </p>
+</div>
+<div class="card">
+  <table>
+    <tr><th>Task</th><th>Status</th><th>Stage</th><th>Score</th><th>Preview</th><th>Updated</th></tr>
+    {% for t in tasks %}
+    <tr>
+      <td><a href="/tasks/{{ t.id }}"><code>{{ t.id[:8] }}</code></a></td>
+      <td class="s-{{ t.status }}">{{ t.status }}</td>
+      <td class="muted">{{ t.stage or "" }}</td>
+      <td>{{ t.score if t.score is not none else "" }}</td>
+      <td>{{ t.preview or "" }}{% if t.error %}<div class="muted">{{ t.error }}</div>{% endif %}</td>
+      <td class="muted">{{ t.updated_at }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="muted">No tasks yet. Forward something to the bot.</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

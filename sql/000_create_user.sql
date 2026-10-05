@@ -1,0 +1,6 @@
+-- Run once as MySQL root. Change the password before running!
+CREATE USER IF NOT EXISTS 'tgx'@'localhost' IDENTIFIED BY 'CHANGE_ME_STRONG_PASSWORD';
+CREATE USER IF NOT EXISTS 'tgx'@'127.0.0.1' IDENTIFIED BY 'CHANGE_ME_STRONG_PASSWORD';
+GRANT SELECT, INSERT, UPDATE, DELETE ON tg_x_copilot.* TO 'tgx'@'localhost';
+GRANT SELECT, INSERT, UPDATE, DELETE ON tg_x_copilot.* TO 'tgx'@'127.0.0.1';
+FLUSH PRIVILEGES;

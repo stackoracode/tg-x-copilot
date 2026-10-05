@@ -1,0 +1,11 @@
+# conda env create -f environment.yml && conda activate tg-x-copilot
+# Runtime deps are also listed in requirements.txt for plain pip/venv installs.
+name: tg-x-copilot
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -r requirements.txt
+      - -e .[dev]

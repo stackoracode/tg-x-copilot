@@ -1,0 +1,25 @@
+# systemd unit (NOT installed automatically). Adjust paths, then:
+#   sudo cp deploy/tg-x-copilot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tg-x-copilot
+#   journalctl -u tg-x-copilot -f
+[Unit]
+Description=tg-x-copilot (Telegram -> X copilot)
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tgx
+WorkingDirectory=/opt/tg-x-copilot
+# Conda env python; find it with: conda run -n tg-x-copilot which python
+ExecStart=/opt/conda/envs/tg-x-copilot/bin/python -m tg_x_copilot
+Restart=on-failure
+RestartSec=5
+# Must exceed SHUTDOWN_GRACE_SECONDS so in-flight tasks can finish.
+TimeoutStopSec=60
+KillSignal=SIGTERM
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

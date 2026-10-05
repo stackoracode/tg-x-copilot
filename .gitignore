@@ -1,0 +1,44 @@
+# secrets / credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+credentials*.json
+service-account*.json
+
+# Telegram sessions
+*.session
+*.session-journal
+
+# local runtime data / media
+data/
+tmp/
+media/
+*.jpg
+*.jpeg
+*.png
+*.webp
+*.gif
+*.mp4
+!docs/**/*.png
+
+# python / tooling caches
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+dist/
+build/
+
+# editors / OS
+.idea/
+.vscode/
+.DS_Store

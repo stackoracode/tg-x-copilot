@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}tg-x-copilot{% endblock %}</title>
+<style>
+  :root { --bg:#fafafa; --fg:#1b1b1f; --muted:#6b6b76; --line:#e3e3e8; --card:#fff; --accent:#2563eb;
+          --ok:#15803d; --warn:#b45309; --bad:#b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111214; --fg:#e8e8ec; --muted:#9a9aa5; --line:#2a2b30; --card:#18191c; --accent:#60a5fa;
+            --ok:#4ade80; --warn:#fbbf24; --bad:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--fg); }
+  header { display:flex; gap:16px; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); background:var(--card); }
+  header a { color:var(--fg); text-decoration:none; font-weight:500; }
+  header .brand { font-weight:700; margin-right:auto; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:16px; margin-bottom:16px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--muted); font-weight:500; font-size:12px; text-transform:uppercase; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size:12px; }
+  pre { white-space:pre-wrap; word-break:break-word; background:var(--bg); padding:8px; border-radius:6px; margin:0; }
+  .muted { color:var(--muted); }
+  .flash { background:var(--card); border-left:3px solid var(--accent); padding:8px 12px; margin-bottom:16px; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; border:1px solid var(--line); font-size:12px; }
+  .s-draft_ready, .s-approved { color:var(--ok); } .s-needs_review, .s-skipped { color:var(--warn); } .s-failed { color:var(--bad); }
+  .ok { color:var(--ok); } .bad { color:var(--bad); }
+  button, input[type=submit] { font:inherit; padding:6px 12px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  input[type=text] { font:inherit; width:100%; padding:6px 8px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  form.inline { display:inline; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
+  .grid img { width:100%; border-radius:6px; border:1px solid var(--line); }
+  .stats { display:flex; flex-wrap:wrap; gap:8px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">tg-x-copilot</span>
+  <a href="/">Tasks</a>
+  <a href="/settings">Settings</a>
+  <a href="/actions/health">Health</a>
+</header>
+<main>
+  {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>
