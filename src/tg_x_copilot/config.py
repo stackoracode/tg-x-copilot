@@ -38,11 +38,16 @@ class JevSettings(BaseModel):
     """TypeSafe AI System One API (Jev). Native typed questions, NOT a chat endpoint.
     Docs: https://docs.typesafe.ai/api"""
 
+    # Jev is optional: when disabled, unconfigured, slow or failing, triage falls back to the
+    # main LLM's evaluation instead of failing the task.
+    enabled: bool = True
     base_url: str = "https://api.typesafe.ai/v1"
     api_key: SecretStr = SecretStr("")
     model: str = "jev-latest"
-    timeout_seconds: float = 20.0
-    max_retries: int = 3
+    timeout_seconds: float = 15.0
+    max_retries: int = 1
+    # Hard wall-clock budget for the whole Jev step (including retries).
+    budget_seconds: float = 30.0
     # Routing thresholds (see pipeline/triage.py and docs.typesafe.ai/confidence):
     # below this confidence Jev's value judgment is not trusted and the main LLM decides.
     confidence_floor: float = 0.6
@@ -99,7 +104,12 @@ class StorageSettings(BaseModel):
     Rejecting/regenerating a task deletes its objects unless another task references them.
     """
 
-    persist_review_media: bool = True
+    # Review copies cost storage for media nobody may use; off by default (the operator still
+    # has the originals in the Telegram chat).
+    persist_review_media: bool = False
+    # When False, approving a task also releases its final assets: they were already delivered
+    # to Telegram with the draft, so R2 only holds media for drafts still awaiting a decision.
+    retain_approved_assets: bool = False
     # Soft budget: uploads are refused (and the image flagged) once tracked usage exceeds it.
     budget_bytes: int = 9 * 1024**3
     photo_max_side: int = 2048
@@ -113,7 +123,6 @@ class DBSettings(BaseModel):
     user: str = "tgx"
     password: SecretStr = SecretStr("")
     database: str = "tg_x_copilot"
-    pool_size: int = 5
     connect_timeout: int = 10
     read_timeout: int = 30
 
@@ -132,7 +141,6 @@ class ConcurrencySettings(BaseModel):
 class PipelineSettings(BaseModel):
     max_rewrite_attempts: int = 3
     max_media_bytes: int = 20 * 1024 * 1024
-    merge_window_seconds: float = 3.0
     task_timeout_seconds: float = 900.0
     # Telegram chat IDs (e.g. -100123...) whose media the operator owns the rights to.
     # Only media from these sources may be kept or enhanced; everything else is
@@ -172,46 +180,52 @@ class AppSettings(BaseSettings):
     admin: AdminSettings = Field(default_factory=AdminSettings)
 
 
-# key -> is_secret. Everything else is bootstrap-only (env).
-EDITABLE_KEYS: dict[str, bool] = {
-    "default_locale": False,
-    "market": False,
-    "cpa.base_url": False,
-    "cpa.api_key": True,
-    "cpa.timeout_seconds": False,
-    "cpa.max_retries": False,
-    "jev.base_url": False,
-    "jev.api_key": True,
-    "jev.model": False,
-    "jev.timeout_seconds": False,
-    "jev.confidence_floor": False,
-    "jev.min_value": False,
-    "jev.promo_skip": False,
-    "jev.risk_review": False,
-    "jev.media_useful_min": False,
-    "models.text_model": False,
-    "models.vision_model": False,
-    "models.image_model": False,
-    "models.image_size": False,
-    "models.image_edit_mode": False,
-    "models.json_mode": False,
-    "models.text_temperature": False,
-    "r2.account_id": False,
-    "r2.access_key_id": True,
-    "r2.secret_access_key": True,
-    "r2.bucket": False,
-    "r2.endpoint": False,
-    "r2.public_base_url": False,
-    "storage.persist_review_media": False,
-    "storage.budget_bytes": False,
-    "storage.photo_max_side": False,
-    "storage.graphic_max_side": False,
-    "storage.jpeg_quality": False,
-    "pipeline.max_rewrite_attempts": False,
-    "pipeline.merge_window_seconds": False,
-    "pipeline.owned_source_ids": False,
-    "pipeline.direct_uploads_owned": False,
-}
+# Keys editable at runtime from the admin UI (stored in MySQL). API keys and other credentials
+# are deliberately absent: they come from the environment only and are never written to MySQL.
+EDITABLE_KEYS: frozenset[str] = frozenset({
+    "default_locale",
+    "market",
+    "cpa.base_url",
+    "cpa.timeout_seconds",
+    "cpa.max_retries",
+    "jev.enabled",
+    "jev.base_url",
+    "jev.model",
+    "jev.timeout_seconds",
+    "jev.budget_seconds",
+    "jev.confidence_floor",
+    "jev.min_value",
+    "jev.promo_skip",
+    "jev.risk_review",
+    "jev.media_useful_min",
+    "models.text_model",
+    "models.vision_model",
+    "models.image_model",
+    "models.image_size",
+    "models.image_edit_mode",
+    "models.json_mode",
+    "models.text_temperature",
+    "r2.account_id",
+    "r2.bucket",
+    "r2.endpoint",
+    "r2.public_base_url",
+    "storage.persist_review_media",
+    "storage.retain_approved_assets",
+    "storage.budget_bytes",
+    "storage.photo_max_side",
+    "storage.graphic_max_side",
+    "storage.jpeg_quality",
+    "pipeline.max_rewrite_attempts",
+    "pipeline.owned_source_ids",
+    "pipeline.direct_uploads_owned",
+})
+
+
+def is_secret_key(key: str) -> bool:
+    """True for credential-like settings, which must never be stored in MySQL."""
+    leaf = key.rsplit(".", 1)[-1]
+    return leaf in {"api_key", "api_hash", "bot_token", "password", "access_key_id",
+                    "secret_access_key"}
 
 
 def get_path(settings: AppSettings, key: str) -> Any:

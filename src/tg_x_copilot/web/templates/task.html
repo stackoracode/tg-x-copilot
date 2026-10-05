@@ -5,7 +5,7 @@
   <h2 style="margin-top:0">Task <code>{{ task.id }}</code> <span class="pill s-{{ task.status }}">{{ task.status }}</span></h2>
   <p class="muted">stage {{ task.stage or "-" }} · attempts {{ task.attempts }} · score {{ task.score }} · route {{ task.route }} · {{ task.locale }}/{{ task.market }} · created {{ task.created_at }}</p>
   {% if task.error %}<pre class="bad">{{ task.error }}</pre>{% endif %}
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/approve"><button class="primary" {% if task.status != "draft_ready" %}disabled{% endif %}>Approve</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/approve">{% set blocking = (task.draft_meta or {}).problems %}<button class="primary" {% if not (task.status == "draft_ready" or (task.status == "needs_review" and not blocking)) %}disabled{% endif %}>{% if task.status == "needs_review" %}Approve (reviewed){% else %}Approve{% endif %}</button></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/regenerate"><button>Regenerate</button></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/reject"><button>Reject</button></form>
 </div>
@@ -14,7 +14,8 @@
   <h3 style="margin-top:0">Draft</h3>
   {% if task.draft_text %}<pre>{{ task.draft_text }}</pre>{% else %}<p class="muted">No draft.</p>{% endif %}
   {% set meta = task.draft_meta or {} %}
-  {% if meta.problems %}<h4>Problems</h4><ul>{% for p in meta.problems %}<li class="bad">{{ p }}</li>{% endfor %}</ul>{% endif %}
+  {% if meta.problems %}<h4>Blocking problems</h4><ul>{% for p in meta.problems %}<li class="bad">{{ p }}</li>{% endfor %}</ul>{% endif %}
+  {% if meta.review %}<h4>Requires review before approval</h4><ul>{% for p in meta.review %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
   {% if meta.warnings %}<h4>Warnings</h4><ul>{% for p in meta.warnings %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
   {% if meta.claims %}<h4>Claims</h4><ul>{% for c in meta.claims %}<li><span class="pill">{{ c.basis }}</span> {{ c.text }}</li>{% endfor %}</ul>{% endif %}
   {% if meta.added_value %}<p><b>Added value:</b> {{ meta.added_value }}</p>{% endif %}

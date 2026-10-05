@@ -25,12 +25,13 @@ from ..i18n import Locale
 from ..logging_setup import ctx as log_ctx
 from ..logging_setup import mask
 from ..models import (
-    RECOVERABLE, Evaluation, ImageAnalysis, ImageDecision, InputEnvelope, MediaKind,
+    Evaluation, ImageAnalysis, ImageDecision, ImageQC, InputEnvelope, MediaKind,
     MediaResult, RewriteResult, SourceMedia, TaskStatus, TriageResult,
 )
 from ..services.storage import StorageBudgetExceeded
 from .guards import GuardReport, XRules, check_rewrite, x_length
 from .image_policy import decide
+from .image_qc import QCMode, build_messages, qc_verdict
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
 
@@ -57,6 +58,7 @@ class ImageOutcome:
     reason: str
     output: ImageBlob | None = None  # optimized final asset (keep/enhance/regenerate)
     ai_generated: bool = False
+    review_blob: ImageBlob | None = None  # e.g. an Image2 output that failed QC
 
 
 class Pipeline:
@@ -101,23 +103,41 @@ class Pipeline:
         if task is None:
             log.warning("task not found")
             return
-        if TaskStatus(task["status"]) not in RECOVERABLE:
-            log.info("task not runnable", extra=log_ctx(status=task["status"]))
+        # Atomic claim: only one worker/process can move RECEIVED -> PROCESSING.
+        if not await repo.claim_task(task_id, self.app.instance_id):
+            log.info("task not claimed (already taken or not runnable)",
+                     extra=log_ctx(status=task["status"]))
             return
+        try:
+            await self._process_claimed(task_id, task)
+        except asyncio.CancelledError:
+            # Graceful shutdown: hand the task back so the next start picks it up immediately.
+            # A per-task timeout also cancels us, but then the worker marks the task FAILED,
+            # so the claim must NOT be released (the sweeper could otherwise re-run it).
+            if self.app.shutting_down:
+                try:
+                    await asyncio.shield(repo.release_claim(task_id, self.app.instance_id))
+                except Exception:
+                    log.exception("could not release claim; it will be requeued after the lease")
+            raise
 
+    async def _process_claimed(self, task_id: str, task: dict[str, Any]) -> None:
+        repo = self.app.repo
         cfg = self.app.config.current
         env = InputEnvelope.model_validate(task["envelope"])
         locale = self.app.i18n.get(env.locale)
         started = time.monotonic()
-        await repo.begin_attempt(task_id)
         if task["attempts"]:  # leftovers from an interrupted earlier run
-            await self.app.storage.release_task(task_id)
+            try:
+                await self.app.storage.release_task(task_id)
+            except Exception:
+                log.exception("releasing leftover assets failed (non-fatal)")
         await self._event(task_id, "start", f"attempt {task['attempts'] + 1}",
                           data={"messages": len(env.message_ids), "media": len(env.media)})
 
-        # 1. Triage: text only, before any download or LLM spend.
+        # 1. Triage: text only, before any download or LLM spend. Jev is optional.
         await repo.set_stage(task_id, "triage")
-        triage = await self._triage(env, locale)
+        triage = await self._triage(task_id, env, locale)
         await repo.save_triage(task_id, triage)
         await self._event(task_id, "triage", f"{triage.summary}; {' '.join(triage.reasons)}",
                           data=triage.model_dump())
@@ -170,15 +190,21 @@ class Pipeline:
         await repo.set_stage(task_id, "persist")
         media_results = await self._persist(task_id, images, outcomes, analyses, cfg)
 
-        problems = list(report.problems)
+        problems = list(report.problems)  # blocking: cannot be approved
+        review = list(report.review)  # must be checked by a human, then may be approved
         if triage.route == "review":
-            problems.append("Jev flagged for human review: " + " ".join(triage.reasons))
-        status = TaskStatus.DRAFT_READY if not problems else TaskStatus.NEEDS_REVIEW
+            review.append("Jev flagged for human review: " + " ".join(triage.reasons))
+        media_review = [r for r in media_results if r.decision == ImageDecision.REVIEW]
+        if media_review:
+            review.append(f"{len(media_review)} image(s) need review (see image decisions).")
+        status = (TaskStatus.DRAFT_READY if not problems and not review
+                  else TaskStatus.NEEDS_REVIEW)
         meta = {
             "hook": rewrite.hook,
             "claims": [c.model_dump() for c in rewrite.claims],
             "added_value": rewrite.added_value,
             "problems": problems,
+            "review": review,
             "warnings": report.warnings + dup_warnings,
             "risks": evaluation.risks,
             "media": [r.model_dump(mode="json") for r in media_results],
@@ -187,7 +213,7 @@ class Pipeline:
         }
         await repo.save_draft(task_id, status, rewrite.post, meta)
         await self._event(task_id, "done", f"{status.value} in {meta['elapsed_s']}s",
-                          data={"problems": problems})
+                          data={"problems": problems, "review": review})
         await self._notify_draft(task_id)
 
     async def mark_failed(self, task_id: str, exc: BaseException) -> None:
@@ -229,16 +255,38 @@ class Pipeline:
 
     # ------------------------------------------------------------------ steps
 
-    async def _triage(self, env: InputEnvelope, locale: Locale) -> TriageResult:
+    async def _triage(self, task_id: str, env: InputEnvelope, locale: Locale) -> TriageResult:
+        """Jev triage, optional at runtime: disabled / unconfigured / timeout / error all fall
+        back to the main LLM's evaluation instead of failing the task."""
         has_media = bool(env.media)
+        cfg = self.app.config.current.jev
+        if not cfg.enabled:
+            return without_jev("Jev disabled; main LLM decides.", has_media=has_media)
+        if not self.app.hub.jev.configured:
+            return without_jev("Jev not configured (JEV__API_KEY unset); main LLM decides.",
+                               has_media=has_media)
         if not has_usable_text(env):
             return without_jev("No usable text for Jev (text-only model); vision + LLM decide.",
                                has_media=has_media)
         state = build_state(env, self._source_info(env))
         questions = build_questions(env, locale.code)
-        async with self.app.limits.jev:
-            resp = await self.app.hub.jev.ask(state, questions)
-        return decide_route(resp, self.app.config.current.jev, has_text=True, has_media=has_media)
+        try:
+            async with self.app.limits.jev:
+                resp = await asyncio.wait_for(self.app.hub.jev.ask(state, questions),
+                                              timeout=cfg.budget_seconds)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if isinstance(exc, TimeoutError):
+                detail = f"timed out after {cfg.budget_seconds:.0f}s"
+            else:
+                detail = f"{type(exc).__name__}: {exc}"
+            reason = mask(f"Jev unavailable ({detail})")[:300]
+            log.warning("jev unavailable; falling back to main LLM", extra=log_ctx(error=reason))
+            await self._event(task_id, "triage", reason + "; falling back to main LLM",
+                              level="warning")
+            return without_jev(reason + "; main LLM decides.", has_media=has_media)
+        return decide_route(resp, cfg, has_text=True, has_media=has_media)
 
     async def _load_media(self, task_id: str, env: InputEnvelope, cfg: AppSettings, *,
                           use: bool) -> tuple[list[LoadedImage], list[str]]:
@@ -255,9 +303,17 @@ class Pipeline:
             if use and sm.kind in _IMAGE_KINDS and (sm.size or 0) <= max_bytes
         ]
         downloaded: dict[int, bytes] = {}
+        download_error = "Could not download from Telegram (deleted or unavailable)."
         if wanted and self.app.telegram:
-            async with self.app.limits.io:
-                downloaded = await self.app.telegram.fetch_media(env.chat_id, wanted)
+            try:
+                async with self.app.limits.io:
+                    downloaded = await self.app.telegram.fetch_media(env.chat_id, wanted)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # media is never fatal: the text draft still goes out
+                download_error = mask(f"Media download failed ({type(exc).__name__}: {exc}); "
+                                      "continuing with text only.")[:300]
+                await self._event(task_id, "media", download_error, level="warning")
 
         loaded: list[LoadedImage] = []
         warnings: list[str] = []
@@ -274,7 +330,7 @@ class Pipeline:
                 continue
             data = downloaded.pop(sm.message_id, None)
             if data is None:
-                await review(idx, sm, "Could not download from Telegram (deleted or unavailable).")
+                await review(idx, sm, download_error)
                 continue
             blob = await asyncio.to_thread(inspect_image, data)
             if blob is None:
@@ -358,8 +414,9 @@ class Pipeline:
                        analyses: dict[int, ImageAnalysis], rules: XRules,
                        hooks: list[dict[str, Any]], locale: Locale, cfg: AppSettings
                        ) -> tuple[RewriteResult, GuardReport]:
-        allowed = (evaluation.key_facts + evaluation.background_points
-                   + [a.extracted_text for a in analyses.values() if a.extracted_text])
+        # Source-derived text counts as verified; everything the LLM produced does not.
+        verified = [a.extracted_text for a in analyses.values() if a.extracted_text]
+        unverified = evaluation.key_facts + evaluation.background_points
         hooks_text = "\n".join(f"- {h['name']}: {h['pattern']} e.g. \"{h['example']}\""
                                for h in hooks) or "- (none)"
 
@@ -386,14 +443,15 @@ class Pipeline:
                     temperature=cfg.models.text_temperature, json_mode=cfg.models.json_mode,
                 )
             report = check_rewrite(result, source_text=env.text, rules=rules,
-                                   allowed_facts=allowed)
+                                   verified_facts=verified, unverified_facts=unverified)
             await self._event(
                 task_id, "rewrite",
                 f"attempt {attempt}: {'ok' if report.ok else '; '.join(report.problems)}",
                 level="info" if report.ok else "warning",
                 data={"post": result.post, "problems": report.problems},
             )
-            if best is None or len(report.problems) < len(best[1].problems):
+            if best is None or (len(report.problems), len(report.review)) < (
+                    len(best[1].problems), len(best[1].review)):
                 best = (result, report)
             if report.ok:
                 break
@@ -429,21 +487,26 @@ class Pipeline:
             hint = graphic_hint(analysis.image_type)
             decision, reason = decide(analysis, owned_source=owned,
                                       target_language=locale.language_tag)
-            raw: bytes | None = None
-            ai = decision in (ImageDecision.ENHANCE, ImageDecision.REGENERATE)
+            if decision == ImageDecision.REVIEW:
+                return ImageOutcome(img.idx, decision, reason)
             try:
-                if decision == ImageDecision.KEEP:
-                    raw = img.blob.data
-                elif decision == ImageDecision.ENHANCE:
+                if decision == ImageDecision.KEEP:  # no Image2 involved -> no QC needed
+                    output = await asyncio.to_thread(self._optimize, img.blob.data, hint, cfg)
+                    return ImageOutcome(img.idx, decision, reason, output)
+
+                mode: QCMode
+                reference: LoadedImage | None = img
+                if decision == ImageDecision.ENHANCE:
+                    mode, facts = "enhance", analysis.extracted_text
                     raw = await edit(prompts.render("image_enhance", locale.code,
                                                     size=m.image_size).user, img)
-                elif decision == ImageDecision.REGENERATE and owned:
-                    # localize our own visual, using it as reference
+                elif owned:  # REGENERATE of our own visual = localize it, using it as reference
+                    mode, facts = "localize", analysis.extracted_text
                     raw = await edit(prompts.render("image_localize", locale.code,
                                                     **self._base_vars(env, locale),
                                                     size=m.image_size).user, img)
-                elif decision == ImageDecision.REGENERATE:
-                    # original visual; the third-party image is NOT sent as a reference
+                else:  # original visual; the third-party image is NOT sent as a reference
+                    mode, reference = "regenerate", None
                     facts = (analysis.extracted_text
                              if analysis.image_type in ("chart", "infographic")
                              else "; ".join(evaluation.key_facts[:4]))
@@ -455,14 +518,22 @@ class Pipeline:
                     async with limits.image:
                         raw = await hub.cpa.images_generate(m.image_model, prompt,
                                                             size=m.image_size)
-                output = (await asyncio.to_thread(self._optimize, raw, hint, cfg)
-                          if raw is not None else None)
+                output = await asyncio.to_thread(self._optimize, raw, hint, cfg)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 return ImageOutcome(img.idx, ImageDecision.REVIEW,
                                     mask(f"Image step failed ({type(exc).__name__}): {exc}")[:500])
-            return ImageOutcome(img.idx, decision, reason, output, ai)
+
+            # Every Image2 output must pass visual QC before it can be a final asset.
+            passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
+                                               facts=facts, post=rewrite.post)
+            if not passed:
+                return ImageOutcome(img.idx, ImageDecision.REVIEW,
+                                    f"Image QC failed after {mode}: {qc_reason}",
+                                    review_blob=output, ai_generated=True)
+            return ImageOutcome(img.idx, decision, f"{reason} QC passed.", output,
+                                ai_generated=True)
 
         results = await asyncio.gather(*(one(i) for i in images), return_exceptions=True)
         final: list[ImageOutcome] = []
@@ -477,6 +548,30 @@ class Pipeline:
         await self._event(task_id, "images",
                           ", ".join(f"#{o.idx}:{o.decision.value}" for o in final) or "no images")
         return final
+
+    async def _qc(self, env: InputEnvelope, locale: Locale, cfg: AppSettings, mode: QCMode,
+                  candidate: ImageBlob, reference: LoadedImage | None, *, facts: str, post: str
+                  ) -> tuple[bool, str]:
+        """Visual verification of one Image2 output. Errors count as a failed check."""
+        allowed = [facts, post] if mode == "regenerate" else [facts]
+        if reference is not None:
+            allowed.append(env.text)
+        try:
+            messages = build_messages(
+                mode, locale=locale.code, market=env.market, language_name=locale.language_name,
+                facts=facts, reference_text=facts if reference is not None else "",
+                candidate_url=image_data_url(candidate.data, candidate.mime),
+                reference_url=(image_data_url(reference.blob.data, reference.blob.mime)
+                               if reference is not None else None),
+            )
+            async with self.app.limits.vision:
+                qc = await self.app.hub.cpa.chat_json(cfg.models.vision_model, messages, ImageQC,
+                                                      json_mode=cfg.models.json_mode)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return False, mask(f"QC unavailable ({type(exc).__name__}: {exc})")[:300]
+        return qc_verdict(qc, allowed_texts=allowed)
 
     async def _persist(self, task_id: str, images: list[LoadedImage],
                        outcomes: list[ImageOutcome], analyses: dict[int, ImageAnalysis],
@@ -493,16 +588,24 @@ class Pipeline:
                 if o.output is not None:
                     kind = "final"
                     key = await self.app.storage.persist(task_id, o.idx, o.output, kind)
-                elif decision == ImageDecision.REVIEW and cfg.storage.persist_review_media \
-                        and o.idx in by_idx:
-                    hint = graphic_hint(analyses[o.idx].image_type) if o.idx in analyses else None
-                    copy = await asyncio.to_thread(self._optimize, by_idx[o.idx].blob.data,
-                                                   hint, cfg)
-                    kind = "review"
-                    key = await self.app.storage.persist(task_id, o.idx, copy, kind)
-            except StorageBudgetExceeded as exc:
-                decision, reason, key, kind = ImageDecision.REVIEW, f"{reason} [{exc}]", None, None
-                await self._event(task_id, "persist", str(exc), level="warning")
+                elif decision == ImageDecision.REVIEW and cfg.storage.persist_review_media:
+                    copy = o.review_blob
+                    if copy is None and o.idx in by_idx:
+                        hint = (graphic_hint(analyses[o.idx].image_type)
+                                if o.idx in analyses else None)
+                        copy = await asyncio.to_thread(self._optimize, by_idx[o.idx].blob.data,
+                                                       hint, cfg)
+                    if copy is not None:
+                        kind = "review"
+                        key = await self.app.storage.persist(task_id, o.idx, copy, kind)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # R2/storage failures never block the text draft
+                label = ("R2 budget reached" if isinstance(exc, StorageBudgetExceeded)
+                         else f"R2 upload failed ({type(exc).__name__})")
+                note = mask(f"{label}: {exc}")[:300]
+                decision, reason, key, kind = ImageDecision.REVIEW, f"{reason} [{note}]", None, None
+                await self._event(task_id, "persist", f"image {o.idx}: {note}", level="warning")
             stored += key is not None
             await self.app.repo.update_media_decision(task_id, o.idx, decision.value, reason,
                                                       ai_generated=o.ai_generated)

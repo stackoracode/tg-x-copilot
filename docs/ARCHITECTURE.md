@@ -37,8 +37,7 @@ behind `Ops.approve`.
 ```mermaid
 flowchart LR
   TG[Telegram user] -- forward / album --> BOT[Telethon bot]
-  BOT --> COL[MessageCollector<br/>merge window]
-  COL --> NORM[normalize → InputEnvelope]
+  BOT -- one message or one album --> NORM[normalize → InputEnvelope]
   NORM --> DB[(MySQL)]
   NORM --> Q[[asyncio.Queue&lt;task_id&gt;]]
   SWEEP[Sweeper / recovery] --> Q
@@ -60,12 +59,17 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
 
 ## Data flow (one task)
 
-1. **Intake.** Messages from allowed users go into the `MessageCollector`, which buffers per
-   chat for `merge_window_seconds`. Several forwards sent together become one task.
+1. **Intake.** Each regular message from an allowed user becomes its own task, even if
+   several unrelated forwards arrive at the same moment. A Telegram album (one `grouped_id`,
+   delivered by Telethon as `events.Album`) is the only automatic grouping.
 2. **Normalize.** `normalize()` builds an `InputEnvelope`: deduplicated text, URLs, a media
    *descriptor* list, forward origins, and the locale and market. No media is downloaded yet.
 3. **Persist and enqueue.** A `tasks` row is written (`received`) and its `task_id` goes on
    the `asyncio.Queue`. MySQL is the source of truth; the queue only carries IDs.
+   - Before any work starts, the worker **claims** the task atomically:
+     `UPDATE tasks SET status='processing', claimed_by=… WHERE id=… AND status='received'`.
+   - Only the worker that gets `affected_rows == 1` processes the task. This holds across
+     workers and across processes.
 4. **Worker** (`pipeline/processor.py`):
    1. **Triage with Jev** (`pipeline/triage.py`). This is text only, and nothing has been
       downloaded yet.
@@ -83,9 +87,18 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
           **escalated** and the main LLM's evaluation decides suitability.
       - If the post has fewer than 20 characters of text, Jev is not called; the vision and
         LLM steps decide.
+      - **Jev is optional.** The task proceeds as `escalated`, with a warning logged and
+        recorded on the task timeline, and the main LLM decides, in any of these cases:
+        - `JEV__ENABLED=false`;
+        - the API key is missing;
+        - Jev returns any error;
+        - the call exceeds `JEV__BUDGET_SECONDS`, which includes retries.
+
+        A Jev outage never fails a task.
       - Skipped tasks cost one Jev call and **store nothing**.
    2. **Media.** Images are downloaded from Telegram **into memory**. Downloads are skipped
-      if Jev judged the media not useful. Each image is checked with Pillow and its
+      if Jev judged the media not useful. A failed download marks the affected images REVIEW
+      with the reason, and the text pipeline continues. Each image is checked with Pillow and its
       `source_sha256` is recorded. If the same file appeared in another task, the draft gets a
       warning.
    3. **Vision**, one call per image in parallel. One failing image goes to review; the task
@@ -93,16 +106,36 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
    4. **Evaluate.** The main LLM acts as an editor: key facts from the source, allowed
       background, risks, the angle, and whether the content is suitable. If it is not
       suitable, the task is skipped and nothing is stored.
-   5. **Rewrite.** The main LLM writes JSON, then deterministic guards check it. Failing
-      drafts are retried with the problems as feedback.
+   5. **Rewrite.** The main LLM writes JSON, then deterministic guards check it.
+      - Blocking *problems* (fabricated numbers, clickbait, too close to the source, and so
+        on) are retried with the problems as feedback.
+      - *Review items* do not trigger retries. These are `background` claims the LLM added,
+        and numbers backed only by LLM-extracted facts. They force `needs_review`.
    6. **Images.** The policy decides keep, enhance, regenerate, or review. Outputs are
       produced and optimized **in memory**.
+      - Every image-model output (enhance, localize, regenerate) must then pass **visual
+        QC** (`pipeline/image_qc.py`, prompt `image_qc.md`).
+      - The vision model compares the candidate with the reference image (enhance and
+        localize) or with the allowed facts (regenerate). It checks text, numbers, dates,
+        product and brand names, people, watermarks and logos, and facts.
+      - A deterministic check also requires every number rendered in the image to appear in
+        the reference text.
+      - Any failed check, reported issue, or QC error makes the image REVIEW.
    7. **Persist** (the only step that writes to R2). It uploads final assets plus, if
-      enabled, compressed review copies. Uploads are deduplicated and budget-checked.
-   8. The draft is saved as `draft_ready` or `needs_review` and the bot delivers it. The
-      downloaded bytes are dropped when the task ends.
+      enabled, compressed review copies. Uploads are deduplicated and budget-checked. **Any**
+      storage error (budget, R2 failure) downgrades that image to REVIEW with the reason; the
+      draft is still saved.
+   8. The draft is saved and the bot delivers it. The status is:
+      - `draft_ready` when there are no problems and no review items;
+      - `needs_review` otherwise.
+
+      If assets cannot be fetched from R2 or sent to Telegram, the text and review card are
+      still sent. The downloaded bytes are dropped when the task ends.
 5. **Operator actions.**
-   - **Approve:** the task becomes `approved` and its review copies are deleted.
+   - **Approve** works on `draft_ready`, or on `needs_review` when there are no blocking
+     problems (the "approve (reviewed)" button). The task becomes `approved`. Review copies
+     are deleted, and so are final assets unless `STORAGE__RETAIN_APPROVED_ASSETS=true`; they
+     were already delivered to Telegram with the draft.
    - **Reject:** the task becomes `rejected` and all its assets are released.
    - **Regenerate:** all assets are released and the task is re-queued. Media is fetched
      again from Telegram.
@@ -133,8 +166,9 @@ any non-final → rejected
   80 requests/s, and text only. Jev is English-first, so other languages, including CJK, have
   lower accuracy. That lowers confidence, which escalates the task to the LLM instead of
   skipping it. This matters because many Telegram sources are not in English.
-- The API key comes from `JEV__API_KEY` (or the admin UI). It is held as a `SecretStr`,
-  shown in the UI only as "•••••• (set)", and its value is registered with the log masker.
+- The API key comes **only** from the `JEV__API_KEY` environment variable. It is held as a
+  `SecretStr`, never stored in MySQL, never editable in the admin UI (which only shows
+  whether it is set), and its value is registered with the log masker.
 
 ## Storage policy (R2 free tier: 10 GB-month Standard storage)
 
@@ -142,8 +176,8 @@ any non-final → rejected
 |---|---|---|
 | Incoming Telegram media | Process memory only, during the task. **No temp files and no R2.** | Until the task ends |
 | Media of skipped, unsuitable, or failed tasks | Nowhere (only metadata and hashes in MySQL) | — |
-| Final assets: kept, enhanced, or generated images | R2 `assets/<sha[:2]>/<sha256>.<ext>`, Standard class | Until the task is rejected or regenerated |
-| Review copies, compressed (`STORAGE__PERSIST_REVIEW_MEDIA`) | R2, same keying | Deleted on approve, reject, or regenerate |
+| Final assets: kept, enhanced, or generated images (QC passed) | R2 `assets/<sha[:2]>/<sha256>.<ext>`, Standard class | Until approve (unless `STORAGE__RETAIN_APPROVED_ASSETS=true`), reject, or regenerate |
+| Review copies, compressed (`STORAGE__PERSIST_REVIEW_MEDIA`, **off by default**) | R2, same keying; for a QC failure, the rejected candidate | Deleted on approve, reject, or regenerate |
 
 - **Deduplication.** Keys are SHA-256 hashes of the *optimized* bytes. If MySQL already
   references a key, the upload is skipped; otherwise a HEAD request guards against orphans.
@@ -173,8 +207,14 @@ any non-final → rejected
 | `db` | concurrent PyMySQL threads (`asyncio.to_thread`) | 5 |
 | `io` | Telegram downloads and R2 transfers | 4 |
 
-PyMySQL is synchronous. Every call goes through `Database.run()`, which takes the `db`
-semaphore and runs the call in `asyncio.to_thread`, so the event loop is never blocked.
+PyMySQL is synchronous, and a connection must never be shared between threads.
+`asyncio.to_thread` may run consecutive calls on different executor threads. So every
+operation goes through `Database.run()`, which takes the `db` semaphore and makes **one**
+`to_thread` call that opens a connection, runs the operation, and closes the connection, all
+in the same thread. Nothing is pooled.
+
+This is the simplest safe model. The connect cost of about 1–3 ms on localhost is negligible
+at MVP volume. A thread-confined pool can replace it later behind the same async API.
 
 ## Reliability
 
@@ -184,12 +224,18 @@ semaphore and runs the call in `asyncio.to_thread`, so the event loop is never b
   `pipeline.task_timeout_seconds`.
 - **Error isolation.** A worker marks a failing task `failed` and releases any assets it
   stored. Image failures are isolated per image.
+- **Optional dependencies degrade, they don't fail.** A Jev failure falls back to the
+  LLM. Telegram media, image model, QC, and R2 failures turn the affected images into REVIEW,
+  and the text draft is still delivered.
+- **Atomic claims.** Only a conditional `UPDATE … WHERE status='received'` that affects
+  exactly one row lets a worker run a task. `claimed_by` and `claimed_at` record the owner
+  and the lease.
 - **Graceful shutdown.**
-  1. The collector is flushed.
-  2. Workers drain within the grace period while Telegram is still connected.
+  1. Workers drain within the grace period while Telegram is still connected.
+  2. Cancelled tasks **release their claim** (back to `received`) for the next start.
   3. Telegram disconnects, then HTTP and DB are closed.
-
-  Interrupted tasks stay `processing` and are re-queued by the sweeper.
+- **Crash recovery.** Every 60s the sweeper resets `processing` tasks whose claim is older
+  than `task_timeout_seconds + 120s` back to `received`, then enqueues all `received` tasks.
 
 ## Content and image policy (enforced in code)
 
@@ -200,7 +246,15 @@ semaphore and runs the call in `asyncio.to_thread`, so the event loop is never b
     images;
   - banned clickbait phrases, hashtag and emoji limits, and all-caps shouting.
 
-  Background claims are listed for the operator to fact-check.
+  Each claim the LLM writes is labelled:
+  - **`source`:** stated in the source.
+  - **`background`:** a factual statement the LLM added. It is unverified, so it **requires
+    human review** before approval, not just a warning.
+  - **`opinion`:** an explanation or analysis that asserts no new fact. It is allowed
+    without review.
+
+  Numbers backed only by LLM-extracted facts, not by the source text or image text, also
+  require review.
 - `image_policy.decide()`:
 
   | Situation | Decision |
@@ -223,6 +277,23 @@ semaphore and runs the call in `asyncio.to_thread`, so the event loop is never b
   carries its own locale and market.
 - Image prompts always include `language_name`, so text rendered in images follows the
   configured language.
+
+## Reliability review changes
+
+- Jev is optional, with a time budget and fallback to the main LLM.
+- Media, R2, image-model, and QC failures are non-fatal and downgrade the image to REVIEW.
+- Visual QC is mandatory for every image-model output.
+- PyMySQL: one connection per operation, confined to one thread (the old shared pool could
+  hand a connection to different executor threads).
+- The merge-window collector is removed. Unrelated forwards are separate tasks; only albums
+  are grouped.
+- API keys are env-only and never stored in MySQL (`sql/003_reliability.sql` cleans up old
+  rows).
+- LLM background facts require review. The "approve (reviewed)" path covers non-blocking
+  review items.
+- Atomic MySQL task claims with a lease, release on cancel, and stale-claim requeue.
+- R2: review copies are off by default, and approved final assets are released unless
+  retention is enabled.
 
 ## Simplifications made during review
 

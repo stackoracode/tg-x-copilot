@@ -27,7 +27,7 @@ def test_album_merges_caption_and_media():
     assert env.forwards[0].chat_id == -10012345
 
 
-def test_burst_of_text_messages_joined():
+def test_messages_of_one_group_are_joined_and_deduped():
     env = normalize([msg(1, "first"), msg(2, "second"), msg(3, "first")], chat_id=1, user_id=2,
                     locale="en-US", market="US")
     assert env.text == "first\n\nsecond"

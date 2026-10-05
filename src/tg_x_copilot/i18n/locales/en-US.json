@@ -18,10 +18,9 @@
     "skipped": "⏭ Task <code>{task_id}</code> skipped: {reason}",
     "failed": "❌ Task <code>{task_id}</code> failed: {error}",
     "draft_header": "📝 <b>Draft</b> for task <code>{task_id}</code> (score {score}, {length}/280 chars)",
-    "review_header": "⚠️ <b>Needs review</b>: task <code>{task_id}</code>. The draft did not pass all checks:",
+    "review_header": "⚠️ <b>Needs review</b>: task <code>{task_id}</code>. ⛔ = blocking (regenerate or reject), 🔎 = check before approving:",
     "media_summary": "🖼 Images: {summary}",
     "ai_label": "AI-generated images are marked 🤖; consider labeling them when posting.",
-    "background_claims": "🔎 Fact-check these background claims before posting:",
     "draft_text_follows": "The post text follows in the next message (tap to copy).",
     "approved": "✅ Approved task <code>{task_id}</code>. Copy the text below and attach the images above when posting to X.",
     "rejected": "🗑 Rejected task <code>{task_id}</code>.",
@@ -31,6 +30,8 @@
     "health_title": "🩺 <b>Connection test</b>",
     "recent_title": "📋 <b>Recent tasks</b>",
     "no_tasks": "No tasks yet.",
-    "working": "⏳ Working…"
+    "working": "⏳ Working…",
+    "btn_approve_reviewed": "✅ Approve (reviewed)",
+    "media_unavailable": "🖼 Images unavailable right now ({items}); the text draft is complete. See the admin UI or regenerate."
   }
 }

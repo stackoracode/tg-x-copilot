@@ -97,32 +97,43 @@ class TelegramBot:
         meta = task.get("draft_meta") or {}
         media = await app.repo.list_media(task_id)
 
+        # Images are best-effort: an R2 or Telegram media failure never blocks the text draft.
         files: list[io.BytesIO] = []
+        unavailable: list[int] = []
         for m in media:
             if m.get("asset_key") and m.get("asset_kind") == "final":
-                async with app.limits.io:
-                    data = await app.hub.r2.get_object(m["asset_key"])
+                try:
+                    async with app.limits.io:
+                        data = await app.hub.r2.get_object(m["asset_key"])
+                except Exception:
+                    log.warning("asset fetch failed; sending draft without it",
+                                extra=ctx(task_id=task_id, idx=m["idx"]))
+                    unavailable.append(m["idx"])
+                    continue
                 bio = io.BytesIO(data)
                 bio.name = f"{task_id[:8]}-{m['idx']}{Path(m['asset_key']).suffix}"
                 files.append(bio)
         if files:
-            await self.client.send_file(chat_id, files[:10])
+            try:
+                await self.client.send_file(chat_id, files[:10])
+            except Exception:
+                log.warning("sending images failed; sending draft text anyway",
+                            extra=ctx(task_id=task_id))
+                unavailable += [int(f.name.split("-")[-1].split(".")[0]) for f in files]
             files.clear()
 
         lines: list[str] = []
         problems = meta.get("problems") or []
+        review = meta.get("review") or []
         if task["status"] == "needs_review":
             lines.append(self.t("review_header", task_id=task_id))
-            lines += [f"• {esc(p)}" for p in problems]
+            lines += [f"⛔ {esc(p)}" for p in problems]
+            lines += [f"🔎 {esc(r)}" for r in review]
         else:
             lines.append(self.t("draft_header", task_id=task_id, score=task.get("score"),
                                 length=meta.get("x_length", "?")))
         for w in meta.get("warnings") or []:
             lines.append(f"⚠️ {esc(w)}")
-        background = [c["text"] for c in meta.get("claims") or [] if c.get("basis") == "background"]
-        if background:
-            lines.append(self.t("background_claims"))
-            lines += [f"• {esc(c)}" for c in background]
         if media:
             summary = ", ".join(
                 f"#{m['idx']} {_DECISION_ICON.get(m.get('decision') or '', '?')}"
@@ -134,11 +145,17 @@ class TelegramBot:
                     lines.append(f"  #{m['idx']}: {esc(m.get('decision_reason') or '')}")
             if any(m.get("ai_generated") for m in media):
                 lines.append(self.t("ai_label"))
+        if unavailable:
+            lines.append(self.t("media_unavailable",
+                                items=", ".join(f"#{i}" for i in sorted(set(unavailable)))))
         lines.append(self.t("draft_text_follows"))
 
         buttons = []
         if task["status"] == "draft_ready":
             buttons.append(Button.inline(self.t("btn_approve"), f"t:a:{task_id}".encode()))
+        elif task["status"] == "needs_review" and not problems:
+            buttons.append(Button.inline(self.t("btn_approve_reviewed"),
+                                         f"t:a:{task_id}".encode()))
         buttons += [Button.inline(self.t("btn_regenerate"), f"t:g:{task_id}".encode()),
                     Button.inline(self.t("btn_reject"), f"t:r:{task_id}".encode())]
         await self.notify(chat_id, "\n".join(lines), buttons=[buttons])
@@ -176,12 +193,21 @@ class TelegramBot:
         if not self._authorized(event.sender_id):
             await event.respond(self.t("unauthorized"))
             return
-        self.app.collector.add(event.chat_id, event.sender_id, [event.message])
+        # Each regular (non-album) message is its own task; nothing is merged by arrival time.
+        await self._intake(event, [event.message])
 
     async def _on_album(self, event: events.Album.Event) -> None:
         if not self._authorized(event.sender_id):
             return
-        self.app.collector.add(event.chat_id, event.sender_id, list(event.messages))
+        # Telegram albums (one grouped_id) are the only automatic grouping.
+        await self._intake(event, list(event.messages))
+
+    async def _intake(self, event: Any, messages: list[Any]) -> None:
+        try:
+            await self.app.intake(event.chat_id, event.sender_id, messages)
+        except Exception as exc:
+            log.exception("intake failed")
+            await event.respond(self.t("action_failed", result=esc(f"intake failed: {exc}")))
 
     async def _on_callback(self, event: events.CallbackQuery.Event) -> None:
         if not self._authorized(event.sender_id):

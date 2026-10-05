@@ -102,6 +102,7 @@ async def settings_page(request: Request) -> HTMLResponse:
         "telegram": f"api_id={base.telegram.api_id} allowed_users={base.telegram.allowed_user_ids}",
         "concurrency": base.concurrency.model_dump(),
         "locales": ctx.i18n.codes,
+        "credentials (env-only, values never shown)": ctx.config.credentials_status(),
     }
     return _render(request, "settings.html", rows=ctx.config.view(),
                    models=await ctx.repo.list_models(), bootstrap=bootstrap)
@@ -112,12 +113,10 @@ async def settings_save(request: Request) -> RedirectResponse:
     ctx = _ctx(request)
     form = await request.form()
     changes: dict[str, Any] = {}
-    for key, secret in EDITABLE_KEYS.items():
+    for key in EDITABLE_KEYS:  # API keys are env-only and not part of this form
         if key not in form:
             continue
         raw = str(form[key])
-        if secret and raw.strip() in ("", "•••••• (set)"):
-            continue  # untouched secret
         current = get_path(ctx.config.current, key)
         try:
             new = ctx.config.parse_value(key, raw, current)

@@ -3,7 +3,7 @@
 {% block content %}
 <div class="card">
   <h3 style="margin-top:0">Runtime settings</h3>
-  <p class="muted">Saved to MySQL and applied immediately (clients are rebuilt). Leave a secret untouched to keep it. "env" means the value comes from <code>.env</code>.</p>
+  <p class="muted">Saved to MySQL and applied immediately (clients are rebuilt). API keys are environment-only and cannot be edited here. "env" means the value comes from <code>.env</code>.</p>
   <form method="post" action="/settings">
     <table>
       <tr><th>Key</th><th>Value</th><th>Source</th></tr>

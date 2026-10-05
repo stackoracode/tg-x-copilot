@@ -70,10 +70,10 @@ class Repository:
         rows = await self.db.fetchall("SELECT status, COUNT(*) AS n FROM tasks GROUP BY status")
         return {r["status"]: int(r["n"]) for r in rows}
 
-    async def recoverable_task_ids(self) -> list[str]:
+    async def runnable_task_ids(self) -> list[str]:
         rows = await self.db.fetchall(
-            "SELECT id FROM tasks WHERE status IN (%s,%s) ORDER BY created_at",
-            (TaskStatus.RECEIVED.value, TaskStatus.PROCESSING.value),
+            "SELECT id FROM tasks WHERE status=%s ORDER BY created_at",
+            (TaskStatus.RECEIVED.value,),
         )
         return [r["id"] for r in rows]
 
@@ -89,11 +89,34 @@ class Repository:
     async def set_stage(self, task_id: str, stage: str) -> None:
         await self.db.execute("UPDATE tasks SET stage=%s WHERE id=%s", (stage, task_id))
 
-    async def begin_attempt(self, task_id: str) -> None:
-        await self.db.execute(
-            "UPDATE tasks SET status=%s, stage='start', error=NULL, attempts=attempts+1"
-            " WHERE id=%s",
-            (TaskStatus.PROCESSING.value, task_id),
+    async def claim_task(self, task_id: str, owner: str) -> bool:
+        """Atomically move a RECEIVED task to PROCESSING for `owner`.
+
+        The conditional UPDATE is the lock: InnoDB row locking guarantees only one worker or
+        process sees affected_rows == 1, so a task can never be processed twice concurrently.
+        """
+        n = await self.db.execute(
+            "UPDATE tasks SET status=%s, stage='start', error=NULL, attempts=attempts+1,"
+            " claimed_by=%s, claimed_at=CURRENT_TIMESTAMP(3) WHERE id=%s AND status=%s",
+            (TaskStatus.PROCESSING.value, owner, task_id, TaskStatus.RECEIVED.value),
+        )
+        return n == 1
+
+    async def release_claim(self, task_id: str, owner: str) -> bool:
+        """Hand an interrupted task back to the queue (graceful shutdown)."""
+        n = await self.db.execute(
+            "UPDATE tasks SET status=%s, stage='released', claimed_by=NULL, claimed_at=NULL"
+            " WHERE id=%s AND status=%s AND claimed_by=%s",
+            (TaskStatus.RECEIVED.value, task_id, TaskStatus.PROCESSING.value, owner),
+        )
+        return n == 1
+
+    async def requeue_stale(self, lease_seconds: int) -> int:
+        """Return PROCESSING tasks whose claim outlived the lease (crashed worker) to RECEIVED."""
+        return await self.db.execute(
+            "UPDATE tasks SET status=%s, stage='requeued', claimed_by=NULL, claimed_at=NULL"
+            " WHERE status=%s AND claimed_at < CURRENT_TIMESTAMP(3) - INTERVAL %s SECOND",
+            (TaskStatus.RECEIVED.value, TaskStatus.PROCESSING.value, int(lease_seconds)),
         )
 
     async def save_triage(self, task_id: str, triage: Any) -> None:
@@ -217,12 +240,11 @@ class Repository:
         rows = await self.db.fetchall("SELECT k, v FROM settings")
         return {r["k"]: json.loads(r["v"]) for r in rows}
 
-    async def set_settings(self, values: dict[str, tuple[Any, bool]]) -> None:
-        """values: key -> (value, is_secret)"""
+    async def set_settings(self, values: dict[str, Any]) -> None:
+        """Non-secret runtime overrides only (API keys are env-only)."""
         await self.db.executemany(
-            "INSERT INTO settings (k, v, is_secret) VALUES (%s,%s,%s)"
-            " ON DUPLICATE KEY UPDATE v=VALUES(v), is_secret=VALUES(is_secret)",
-            [(k, json.dumps(v), int(sec)) for k, (v, sec) in values.items()],
+            "INSERT INTO settings (k, v) VALUES (%s,%s) ON DUPLICATE KEY UPDATE v=VALUES(v)",
+            [(k, json.dumps(v)) for k, v in values.items()],
         )
 
     async def delete_setting(self, key: str) -> None:

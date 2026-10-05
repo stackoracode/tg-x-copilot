@@ -1,14 +1,17 @@
-"""Tiny PyMySQL connection pool that never blocks the event loop.
+"""PyMySQL access that never blocks the event loop and never shares a connection across threads.
 
-Every DB call runs in a worker thread via `asyncio.to_thread`, gated by the `db` semaphore,
-so at most `concurrency.db` threads talk to MySQL at once and the pool never grows beyond that.
+Threading model (simplest safe MVP): every DB operation runs in one `asyncio.to_thread` call
+that opens its own connection, uses it, and closes it, all in that same worker thread. A PyMySQL
+connection is not thread-safe, and `to_thread` may run consecutive calls on different executor
+threads, so connections are never pooled or handed between threads. Concurrency is bounded by
+the `db` semaphore. The per-operation connect cost (~1-3 ms on localhost) is fine at MVP volume;
+a thread-confined pool can replace this later without changing the async API.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import queue
 from collections.abc import Callable
 from typing import Any, TypeVar
 
@@ -25,7 +28,6 @@ class Database:
     def __init__(self, cfg: DBSettings, semaphore: asyncio.Semaphore) -> None:
         self._cfg = cfg
         self._sem = semaphore
-        self._idle: queue.LifoQueue[pymysql.connections.Connection] = queue.LifoQueue()
         self._closed = False
 
     # ------------------------------------------------------------ sync internals (thread)
@@ -46,36 +48,13 @@ class Database:
             write_timeout=c.read_timeout,
         )
 
-    def _acquire(self) -> pymysql.connections.Connection:
-        try:
-            conn = self._idle.get_nowait()
-        except queue.Empty:
-            return self._connect()
-        try:
-            conn.ping(reconnect=True)
-            return conn
-        except Exception:
-            _safe_close(conn)
-            return self._connect()
-
-    def _release(self, conn: pymysql.connections.Connection) -> None:
-        if self._closed or self._idle.qsize() >= self._cfg.pool_size:
-            _safe_close(conn)
-        else:
-            self._idle.put(conn)
-
     def _run(self, fn: Callable[[pymysql.connections.Connection], T]) -> T:
-        conn = self._acquire()
+        """Runs entirely inside one worker thread: connect -> fn -> close."""
+        conn = self._connect()
         try:
-            result = fn(conn)
-        except (pymysql.err.OperationalError, pymysql.err.InterfaceError):
-            _safe_close(conn)  # connection may be broken; don't return it to the pool
-            raise
-        except Exception:
-            self._release(conn)
-            raise
-        self._release(conn)
-        return result
+            return fn(conn)
+        finally:
+            _safe_close(conn)
 
     # ------------------------------------------------------------ async API
 
@@ -131,17 +110,8 @@ class Database:
         await self.fetchone("SELECT 1 AS ok")
 
     async def close(self) -> None:
-        self._closed = True
-
-        def drain() -> None:
-            while True:
-                try:
-                    _safe_close(self._idle.get_nowait())
-                except queue.Empty:
-                    return
-
-        await asyncio.to_thread(drain)
-        log.info("database pool closed")
+        self._closed = True  # no pooled connections to drain
+        log.info("database closed")
 
 
 def _safe_close(conn: pymysql.connections.Connection) -> None:

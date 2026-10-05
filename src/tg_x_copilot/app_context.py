@@ -1,13 +1,19 @@
 """Composition root: builds every component once and owns startup/shutdown order.
 
-Start:  DB -> settings overrides -> clients -> workers -> recovery/sweeper -> Telegram
-Stop:   Telegram (stop intake) -> flush collector -> workers (grace) -> sweeper -> HTTP -> DB
+Start:  DB -> settings overrides -> clients -> Telegram -> workers -> sweeper
+Stop:   workers (grace; claims of cancelled tasks are released) -> Telegram -> sweeper -> HTTP -> DB
+
+Grouping: a Telegram album (one grouped_id) becomes one task; every other message, forwarded or
+not, becomes its own task. Unrelated forwards are never merged by arrival time.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
+import uuid
 from typing import Any
 
 from .bot import TelegramBot
@@ -15,7 +21,6 @@ from .config import AppSettings
 from .db import Database, Repository
 from .i18n import I18n
 from .logging_setup import ctx
-from .pipeline.collector import MessageCollector
 from .pipeline.limits import Limits
 from .pipeline.normalizer import normalize
 from .pipeline.processor import Pipeline
@@ -32,6 +37,9 @@ SWEEP_INTERVAL_S = 60.0
 
 class AppContext:
     def __init__(self, settings: AppSettings) -> None:
+        # Unique per process: used as the owner of atomic task claims in MySQL.
+        self.instance_id = f"{socket.gethostname()[:40]}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
+        self.shutting_down = False  # cancelled tasks release their claim only during shutdown
         self.limits = Limits.from_settings(settings.concurrency)
         self.db = Database(settings.db, self.limits.db)
         self.repo = Repository(self.db)
@@ -47,9 +55,6 @@ class AppContext:
             self.pipeline.process, self.pipeline.mark_failed,
             workers=settings.concurrency.workers, maxsize=settings.concurrency.queue_maxsize,
             task_timeout=lambda: self.config.current.pipeline.task_timeout_seconds,
-        )
-        self.collector = MessageCollector(
-            self.intake, window=lambda: self.config.current.pipeline.merge_window_seconds
         )
         self.telegram: TelegramBot | None = None
         self._sweeper: asyncio.Task[None] | None = None
@@ -74,9 +79,16 @@ class AppContext:
 
     # ------------------------------------------------------------------ recovery
 
+    def _lease_seconds(self) -> int:
+        # A claim older than the task timeout (+ margin) belongs to a crashed worker/process.
+        return int(self.config.current.pipeline.task_timeout_seconds) + 120
+
     async def _sweep_once(self) -> int:
+        stale = await self.repo.requeue_stale(self._lease_seconds())
+        if stale:
+            log.warning("requeued tasks with expired claims", extra=ctx(n=stale))
         n = 0
-        for task_id in await self.repo.recoverable_task_ids():
+        for task_id in await self.repo.runnable_task_ids():
             if await self.workers.enqueue(task_id, wait=False):
                 n += 1
         return n
@@ -111,13 +123,12 @@ class AppContext:
 
     async def stop(self) -> None:
         grace = self.config.base.shutdown_grace_seconds
+        self.shutting_down = True
         log.info("shutting down", extra=ctx(grace=grace))
         # Workers drain while Telegram is still connected so in-flight drafts get delivered.
         steps = [
-            ("collector", self.collector.close),
             ("workers", lambda: self.workers.stop(grace)),
             ("telegram", self.telegram.stop if self.telegram else None),
-            ("collector", self.collector.close),  # flushes anything that arrived meanwhile
         ]
         for name, fn in steps:
             if fn is None:

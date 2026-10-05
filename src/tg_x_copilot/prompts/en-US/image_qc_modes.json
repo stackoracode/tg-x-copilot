@@ -1,0 +1,6 @@
+{
+  "_comment": "Mode-specific rules inserted into image_qc.md as $mode_rules.",
+  "enhance": "This is a quality-only pass on the REFERENCE image. The CANDIDATE must depict exactly the same content: identical text, numbers, dates, names, people, objects, logos and watermarks. Only sharpness, noise, exposure and color may differ.",
+  "localize": "The CANDIDATE is the REFERENCE image with its text translated into $language_name. Layout, people, objects, logos and watermarks must be unchanged. Every number, unit, date and proper name must be identical to the REFERENCE; the translation must be faithful and add nothing.",
+  "regenerate": "The CANDIDATE is a NEW original illustration (no reference image is shown). Any text must be in $language_name and use only the reference facts. It must contain no logos, brand marks, watermarks, handles or URLs, no realistic likeness of identifiable real people, and must not look like a news photograph of a real event."
+}

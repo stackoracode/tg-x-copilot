@@ -23,10 +23,13 @@ CREATE TABLE IF NOT EXISTS tasks (
   draft_text    TEXT          NULL,
   draft_meta    JSON          NULL,              -- hook, claims, guard problems, media summary
   attempts      INT           NOT NULL DEFAULT 0,
+  claimed_by    VARCHAR(64)   NULL,              -- worker that atomically claimed the task
+  claimed_at    DATETIME(3)   NULL,              -- claim lease start (stale leases are requeued)
   error         TEXT          NULL,
   created_at    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   updated_at    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
   KEY idx_tasks_status (status, created_at),
+  KEY idx_tasks_claim (status, claimed_at),
   KEY idx_tasks_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -76,11 +79,11 @@ CREATE TABLE IF NOT EXISTS task_events (
   CONSTRAINT fk_events_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Runtime setting overrides (whitelisted keys only, see config.EDITABLE_KEYS). Values are JSON.
+-- Runtime setting overrides (whitelisted non-secret keys only, see config.EDITABLE_KEYS).
+-- API keys/credentials are env-only and must never be stored here.
 CREATE TABLE IF NOT EXISTS settings (
   k           VARCHAR(128) NOT NULL PRIMARY KEY,
   v           JSON         NOT NULL,
-  is_secret   TINYINT(1)   NOT NULL DEFAULT 0,
   updated_at  DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

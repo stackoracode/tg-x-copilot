@@ -1,4 +1,6 @@
-"""Turn Telethon messages (single, album, or a burst of forwards) into one InputEnvelope.
+"""Turn one Telegram message, or one album (shared grouped_id), into one InputEnvelope.
+
+Unrelated forwards are never merged: the bot calls this once per regular message.
 
 Uses duck typing on Telethon's Message so it can be unit-tested with simple fakes.
 """

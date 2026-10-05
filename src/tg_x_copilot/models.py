@@ -20,7 +20,6 @@ class TaskStatus(StrEnum):
     FAILED = "failed"
 
 
-RECOVERABLE = {TaskStatus.RECEIVED, TaskStatus.PROCESSING}
 TERMINAL = {TaskStatus.APPROVED, TaskStatus.REJECTED}
 
 
@@ -148,7 +147,10 @@ class Evaluation(BaseModel):
 
 class Claim(BaseModel):
     text: str
-    basis: Literal["source", "background"]
+    # source     = stated in the source
+    # background = factual context added by the LLM (unverified -> requires human review)
+    # opinion    = explanation, analysis or opinion that asserts no new fact
+    basis: Literal["source", "background", "opinion"]
 
 
 class RewriteResult(BaseModel):
@@ -158,6 +160,22 @@ class RewriteResult(BaseModel):
     is_mere_translation: bool = False
     added_value: str = ""
     image_brief: str = ""  # used when regenerating an original visual
+
+
+class ImageQC(BaseModel):
+    """Vision-model verification of an Image2 output (enhance / localize / regenerate)."""
+
+    passed: bool
+    text_consistent: bool  # important text preserved (enhance), faithfully translated
+    #                        (localize), or correctly spelled and allowed (regenerate)
+    numbers_consistent: bool
+    dates_consistent: bool
+    names_consistent: bool  # product, brand, organization and place names
+    people_consistent: bool  # no people added/removed/altered; no real-person likeness
+    watermarks_ok: bool  # no watermark/logo added, and none removed
+    facts_consistent: bool  # nothing contradicts the source facts
+    rendered_text: str = ""  # all text visible in the candidate, verbatim
+    issues: list[str] = Field(default_factory=list)
 
 
 class MediaResult(BaseModel):

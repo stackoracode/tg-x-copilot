@@ -12,19 +12,28 @@ You forward posts to the bot: text, photos, captions, albums, or several posts a
    - the probability that the post is promotional, risky, unverified, or has useful media.
 
    Each answer comes with probabilities and a confidence value. Confident low-value posts are
-   skipped at once. Uncertain ones are passed on to the main LLM.
+   skipped at once. Uncertain ones are passed on to the main LLM. Jev is **optional**: if it
+   is disabled, unconfigured, slow, or failing, the main LLM decides instead and the task
+   continues.
 2. The **main LLM and vision model** (via a CPA proxy, OpenAI-compatible) evaluate the post
    in depth and rewrite it as a concise, natural X post. The post has an honest hook and
    practical background. Made-up facts, clickbait, and translate-and-repost are blocked by
    deterministic guards.
 3. **Images** are kept, enhanced, regenerated as original visuals, or flagged for review.
    Third-party watermarks are never removed, and third-party files are never reposted.
+   Every output from the image model must pass a **visual QC check** before it is used. QC
+   compares text, numbers, dates, names, people, watermarks, and facts. A failed check sends
+   the image to review.
 4. You get a **draft** with buttons to approve, regenerate, or reject. You post it to X
    yourself.
 
 **Storage is built for the R2 free tier.** Incoming media stays in memory only. Nothing is
-stored for skipped or rejected content. Only final assets and, optionally, review copies are
-uploaded. They are compressed and keyed by content hash, so duplicates are stored once.
+stored for skipped or rejected content. Only final assets for pending drafts are uploaded.
+Review copies are optional and off by default. Assets are freed on approval unless retention
+is enabled. Uploads are compressed and keyed by content hash, so duplicates are stored once.
+
+**Media is never fatal.** If Telegram downloads, the image model, QC, or R2 fail, the
+affected image is marked REVIEW with the reason. The text draft is still delivered.
 
 Stack: Python 3.11+, FastAPI, Telethon, asyncio, httpx, Pydantic v2, MySQL (PyMySQL in
 threads), Cloudflare R2 (async SigV4, Standard storage), a CPA proxy, TypeSafe Jev, and
@@ -34,7 +43,7 @@ See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the data flow, Jev rout
 policy, concurrency, and content rules.
 
 ```
-Telegram ─▶ Bot ─▶ Collector ─▶ normalize ─▶ MySQL + asyncio.Queue ─▶ Workers
+Telegram ─▶ Bot (1 msg or 1 album) ─▶ normalize ─▶ MySQL + Queue ─▶ Workers (atomic claim)
                                                                         │
   Jev /v1/systemone (text-only triage) ──skip──▶ done (nothing stored) ◀┤
                                                                         ▼
@@ -59,15 +68,15 @@ src/tg_x_copilot/
   clients/openai_compat.py  CPA client (chat, vision, images)
   clients/r2.py          R2 SigV4 client (put/get/head/delete, presign)
   db/                    PyMySQL pool (to_thread + semaphore), repository (all SQL)
-  pipeline/              normalizer, collector, workers, triage, processor, guards,
-                         image policy, media optimization
+  pipeline/              normalizer, workers, triage, processor, guards, image policy,
+                         image QC, media optimization
   services/              client hub, runtime config, asset store (R2 policy), ops
   prompts/en-US/         LLM prompts (*.md) and Jev question set (jev_triage.json)
   i18n/locales/          locale packs
   web/                   FastAPI admin UI (Jinja2)
 sql/                     schema + en-US seed + DB user
 deploy/                  systemd unit (not installed automatically)
-tests/                   unit tests for the pure logic (triage, guards, image policy, media...)
+tests/                   unit + reliability tests (no network/DB/Telegram needed)
 ```
 
 ## Setup
@@ -96,6 +105,10 @@ mysql -u root -p < sql/002_seed_en_us.sql
 mysql -u root -p < sql/000_create_user.sql
 ```
 
+If your database was created from the first schema version (before atomic task claims), also
+run `mysql -u root -p < sql/003_reliability.sql`. It adds the claim columns and deletes any
+API keys stored in `settings`.
+
 ### 3. Cloudflare R2
 
 Create a bucket, for example `tg-x-copilot`, and keep it in **Standard** storage. The free
@@ -104,8 +117,12 @@ Write** on that bucket. The bucket can stay private: the admin UI uses presigned
 
 ### 4. TypeSafe Jev
 
-Get an API key from TypeSafe (early access) and set `JEV__API_KEY`. The defaults point at
-`https://api.typesafe.ai/v1` with the model `jev-latest`.
+Get an API key from TypeSafe (early access) and set `JEV__API_KEY` in `.env`. The defaults
+point at `https://api.typesafe.ai/v1` with the model `jev-latest`.
+
+Jev is optional. Set `JEV__ENABLED=false`, or leave the key empty, to run without it. If a
+call fails, or exceeds `JEV__BUDGET_SECONDS` (30s by default, including retries), a warning is
+logged and the main LLM's evaluation decides.
 
 Routing thresholds can be tuned at runtime: `JEV__CONFIDENCE_FLOOR`, `JEV__MIN_VALUE`,
 `JEV__PROMO_SKIP`, `JEV__RISK_REVIEW`, and `JEV__MEDIA_USEFUL_MIN`. To change the triage
@@ -146,20 +163,40 @@ The admin UI listens on `127.0.0.1:8080`. Open it through an SSH tunnel:
   - **🔄 Refresh models** reads CPA `/v1/models` and TypeSafe `/v1/models`.
   - **🩺 Test connections** checks MySQL, R2, R2 budget usage, CPA, Jev, and Telegram.
   - **📋 Recent tasks** lists the latest tasks.
-- Forward one or more posts. Forwards that arrive within `PIPELINE__MERGE_WINDOW_SECONDS`
-  become one task.
-- Each draft arrives as three parts: the final images, a review card (problems, background
-  claims to fact-check, image decisions, duplicate warnings), and the plain post text.
-- **Approve** is only available when every check passed. Approving deletes the review copies.
-  **Reject** deletes all of the task's R2 objects. **Regenerate** deletes them and processes
-  the task again from the Telegram originals.
+- Forward posts. **Each regular message becomes its own task**, even when several arrive at
+  the same moment. Only a Telegram **album** (media sent as one group) is grouped into a
+  single task.
+- Each draft arrives as three parts:
+  - the final images;
+  - a review card with ⛔ blocking problems, 🔎 items to review, image decisions with
+    reasons, and duplicate warnings;
+  - the plain post text.
+
+  If images can't be fetched, the card says so and the text is still sent.
+- **`draft_ready`** means every check passed, and you can **Approve**.
+- **`needs_review` with only 🔎 items** means a human must check something before posting:
+  - background facts the LLM added;
+  - numbers that only LLM-extracted facts back up;
+  - Jev's risk flags;
+  - images that need review.
+
+  After checking, use **Approve (reviewed)**.
+- **⛔ problems** mean the draft can't be approved (for example, a fabricated number or
+  clickbait). Regenerate or reject it.
+- **Approve** frees the task's R2 assets unless `STORAGE__RETAIN_APPROVED_ASSETS=true`. The
+  images were already delivered with the draft. **Reject** deletes all of the task's R2
+  objects. **Regenerate** deletes them and processes the task again from the Telegram
+  originals.
 
 ## Storage policy in short
 
 - **Never stored:** incoming media for triage, skipped or unsuitable tasks, failed tasks,
   and temp files (processing happens in memory).
-- **Stored, deduplicated by SHA-256:** final draft images, plus compressed review copies
-  while a decision is pending.
+- **Stored, deduplicated by SHA-256:** final draft images while a decision is pending.
+  Optionally, compressed review copies are also stored (`STORAGE__PERSIST_REVIEW_MEDIA`,
+  off by default).
+- **Released:** everything on reject or regenerate. On approve, everything is released unless
+  `STORAGE__RETAIN_APPROVED_ASSETS=true`, which keeps the final assets long-term.
 - **Compression:** screenshots and charts stay lossless PNG (max 4096 px). Photos become
   JPEG at quality 85 (max 2048 px). Clean Telegram JPEGs are kept as-is. Metadata is
   stripped.
@@ -197,13 +234,29 @@ review.
 
 Text in generated images follows the locale's `language_name`.
 
+## Reliability behaviour
+
+| Failure / risk | Behaviour |
+|---|---|
+| Jev disabled, unconfigured, timeout, or error | Warning logged; the task continues and the main LLM decides |
+| Telegram media download fails | Affected images → REVIEW with the reason; text draft continues |
+| Image model / QC / R2 upload fails | Affected image → REVIEW with the reason; text draft continues |
+| R2 fetch fails while sending a draft | The text and review card are still sent, with a note that images are unavailable |
+| Image2 output fails visual QC | → REVIEW; can be kept as a review copy if enabled |
+| LLM adds background facts | Draft → `needs_review`; a human must check them before approving |
+| Two workers or processes pick the same task | Atomic MySQL claim (`UPDATE … WHERE status='received'`): only one runs it |
+| Worker cancelled (shutdown) | Its claim is released and the task returns to `received` |
+| Process crashes mid-task | Its claim expires after `task_timeout + 120s`; the sweeper requeues the task |
+| PyMySQL thread safety | One connection per operation, created, used, and closed in one worker thread |
+
 ## Security notes
 
 - Only `TELEGRAM__ALLOWED_USER_IDS` can use the bot. An empty list means nobody can.
 - The admin UI uses HTTP Basic auth and should be reached only over localhost or a tunnel.
-- Secrets edited in the admin UI are stored **in plaintext** in the `settings` table, and
-  they are masked in the UI and in logs. If you prefer, keep secrets only in `.env`
-  (`chmod 600`).
+- **API keys are environment-only.** The CPA, Jev, and R2 keys, and every other
+  credential, are read from `.env` (`chmod 600`). They can't be edited in the admin UI and
+  are never written to MySQL. If such rows already exist in `settings`, they are ignored with
+  a warning. The settings page only shows whether each key is set.
 - `.env`, Telegram sessions, keys, local media, and caches are excluded by `.gitignore`.
 
 ## Roadmap

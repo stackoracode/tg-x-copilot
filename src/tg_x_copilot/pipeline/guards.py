@@ -44,7 +44,10 @@ class XRules:
 
 @dataclass
 class GuardReport:
+    # Blocking: trigger a rewrite retry; a draft that still has them cannot be approved.
     problems: list[str] = field(default_factory=list)
+    # Non-blocking but mandatory human review before approval (unverified LLM facts).
+    review: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -82,7 +85,11 @@ def similarity(a: str, b: str) -> float:
 
 
 def check_rewrite(result: RewriteResult, *, source_text: str, rules: XRules,
-                  allowed_facts: list[str] | None = None) -> GuardReport:
+                  verified_facts: list[str] | None = None,
+                  unverified_facts: list[str] | None = None) -> GuardReport:
+    """verified_facts: text taken from the source itself (e.g. text read from its images).
+    unverified_facts: LLM-produced material (editor key facts, background points). Numbers
+    backed only by these, and any `background` claim, require human review."""
     report = GuardReport()
     post = result.post.strip()
     lower = post.lower()
@@ -122,18 +129,31 @@ def check_rewrite(result: RewriteResult, *, source_text: str, rules: XRules,
     if sim >= rules.similarity_threshold:
         report.problems.append(f"Too close to the source text (similarity {sim:.2f}).")
 
-    # Fabrication signal: every number in the post must appear in the source or allowed facts.
-    known = numbers_in(source_text)
-    for fact in allowed_facts or []:
-        known |= numbers_in(fact)
-    unknown = sorted(n for n in numbers_in(post) if n not in known)
+    # Fabrication signal: every number must be traceable. Numbers absent everywhere block the
+    # draft; numbers backed only by LLM-produced facts need a human check.
+    verified = numbers_in(source_text)
+    for fact in verified_facts or []:
+        verified |= numbers_in(fact)
+    unverified: set[str] = set()
+    for fact in unverified_facts or []:
+        unverified |= numbers_in(fact)
+    post_numbers = numbers_in(post)
+    unknown = sorted(n for n in post_numbers if n not in verified and n not in unverified)
     if unknown:
         report.problems.append(
             "Numbers not found in source or approved facts (possible fabrication): "
             + ", ".join(unknown)
         )
+    llm_only = sorted(n for n in post_numbers if n not in verified and n in unverified)
+    if llm_only:
+        report.review.append(
+            "Numbers backed only by LLM-extracted facts, not the source text: "
+            + ", ".join(llm_only)
+        )
 
-    background = [c.text for c in result.claims if c.basis == "background"]
-    if background:
-        report.warnings.append(f"{len(background)} background claim(s) need a quick fact-check.")
+    # Background facts added by the LLM are unverified: they require review, not just a warning.
+    # Opinions/explanations (basis "opinion") assert no new fact and are allowed as-is.
+    for claim in result.claims:
+        if claim.basis == "background":
+            report.review.append(f"Unverified background claim: {claim.text}")
     return report

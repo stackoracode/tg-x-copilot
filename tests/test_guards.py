@@ -16,8 +16,9 @@ def _r(post: str, **kw) -> RewriteResult:
 def test_clean_post_passes():
     post = "Revenue up 12% to $3,400M in Q2. Why it matters: more cash for price cuts this fall."
     report = check_rewrite(_r(post), source_text=SOURCE, rules=RULES,
-                           allowed_facts=["Q2 means the second quarter"])
+                           verified_facts=["Q2 means the second quarter"])
     assert report.ok, report.problems
+    assert not report.review
 
 
 def test_fabricated_number_is_flagged():
@@ -52,8 +53,25 @@ def test_numbers_normalized():
     assert numbers_in("$3,400 and 12.5%") == {"3400", "12.5"}
 
 
-def test_background_claims_are_warnings_not_problems():
+def test_background_claims_require_review_not_just_warning():
     post = "Revenue up 12% in Q2. Why it matters: margins."
     r = _r(post, claims=[Claim(text="Q2 ends in June", basis="background")])
-    report = check_rewrite(r, source_text=SOURCE, rules=RULES, allowed_facts=["Q2"])
-    assert report.ok and report.warnings
+    report = check_rewrite(r, source_text=SOURCE, rules=RULES, verified_facts=["Q2"])
+    assert report.ok  # not a blocking problem (no retry loop)...
+    assert any("Q2 ends in June" in item for item in report.review)  # ...but review is mandatory
+
+
+def test_opinion_claims_need_no_review():
+    post = "Revenue up 12% in Q2. That suggests demand is holding up."
+    r = _r(post, claims=[Claim(text="Revenue grew 12%", basis="source"),
+                         Claim(text="Demand is holding up", basis="opinion")])
+    report = check_rewrite(r, source_text=SOURCE, rules=RULES, verified_facts=["Q2"])
+    assert report.ok and not report.review
+
+
+def test_numbers_backed_only_by_llm_facts_require_review():
+    post = "Revenue up 12% in Q2, about 3.4 billion dollars."
+    report = check_rewrite(_r(post), source_text=SOURCE, rules=RULES, verified_facts=["Q2"],
+                           unverified_facts=["Revenue reached $3.4 billion"])
+    assert report.ok
+    assert any("3.4" in item for item in report.review)

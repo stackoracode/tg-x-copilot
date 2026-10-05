@@ -13,11 +13,10 @@ def test_overrides_apply_whitelisted_only():
     assert s.pipeline.owned_source_ids == [-1001]
 
 
-def test_jev_defaults_point_at_typesafe_and_key_is_secret():
-    s = apply_overrides(AppSettings(_env_file=None), {"jev.api_key": "ts-secret-key-123"})
+def test_jev_defaults_point_at_typesafe():
+    s = AppSettings(_env_file=None)
     assert s.jev.base_url == "https://api.typesafe.ai/v1" and s.jev.model == "jev-latest"
-    assert "ts-secret-key-123" not in repr(s.jev)
-    assert s.jev.api_key.get_secret_value() == "ts-secret-key-123"
+    assert s.jev.enabled
 
 
 def test_prompts_render_and_fallback():

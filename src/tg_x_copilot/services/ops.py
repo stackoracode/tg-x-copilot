@@ -132,12 +132,26 @@ class Ops:
         task = await self.app.repo.get_task(task_id)
         if not task:
             return False, "not found"
-        if task["status"] != TaskStatus.DRAFT_READY.value:
-            return False, f"only draft_ready tasks can be approved (is {task['status']})"
+        meta = task.get("draft_meta") or {}
+        status = task["status"]
+        if status == TaskStatus.NEEDS_REVIEW.value and meta.get("problems"):
+            return False, "draft has blocking problems; regenerate or reject it"
+        if status not in (TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value):
+            return False, f"only draft_ready / needs_review tasks can be approved (is {status})"
         await self.app.repo.set_status(task_id, TaskStatus.APPROVED, stage="done")
-        freed = await self.app.storage.release_task(task_id, kinds=("review",))
-        await self.app.repo.add_event(task_id, "approve",
-                                      f"approved by operator; {freed} review copies deleted")
+        # Final assets were already delivered to Telegram with the draft. Unless long-term
+        # retention is enabled, approving frees them from R2 as well as any review copies.
+        retain = self.app.config.current.storage.retain_approved_assets
+        kinds = ("review",) if retain else ("final", "review")
+        try:
+            freed = await self.app.storage.release_task(task_id, kinds=kinds)
+        except Exception:
+            log.exception("releasing assets on approve failed (non-fatal)")
+            freed = 0
+        await self.app.repo.add_event(
+            task_id, "approve",
+            f"approved by operator ({'reviewed' if status == 'needs_review' else 'ready'}); "
+            f"{freed} R2 object(s) deleted; retain_approved_assets={retain}")
         return True, "approved"
 
     async def reject(self, task_id: str) -> tuple[bool, str]:
