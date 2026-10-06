@@ -158,3 +158,29 @@ continue to record per-image processing/transport failure stages and caption del
 `tests/test_promotion_bundle.py` covers text/OCR promotion isolation, source/rights preservation,
 empty-UI-background edits, risk-specific review, explicit card fallback, preference persistence,
 caption+album grouping in both locales, oversize text and partial Telegram acknowledgements.
+
+
+## Explicit action priority
+
+An explicit `INFO_CARD` or `GENERATE` action always selects original fact-based creation,
+even when remembered options still include MINIMAL_CHANGES and REMOVE_OVERLAYS. These actions
+are identified by the existing registry's `text_capable` property; omission actions likewise
+never request source patching. The central `wants_region_edit` predicate applies this rule to
+policy planning, source-loading, fact verification, the processor and permission UI consistently.
+Preferences remain stored unchanged, so switching back to AUTO/ENHANCE restores local cleanup.
+Image Tools explains that checked preferences apply to the new design for original creation.
+The generation prompt explicitly treats MINIMAL_CHANGES as a design preference in these modes,
+rather than a demand to patch the source or restore hidden UI.
+
+Independent creation jobs reuse valid, cleaned, traceable fact packets and the existing draft.
+They do not download/re-analyze source pixels or rerun evaluation/rewrite when the persisted packet
+is valid. Every new result still passes Vision QC, final R2 persistence and confirmed Telegram
+photo+caption delivery. Original files are omitted from the publishing bundle; they are not edited
+or reposted. Automatic/local cleanup continues to require source rights, safe regions, outside-pixel
+preservation and protected-mark checks. An explicit selection of INFO_CARD is independent of the
+optional info_card_fallback preference, which remains only for users choosing local cleanup first.
+
+`tests/test_image_action_priority.py` reproduces the actual saved `info_card + minimal_changes +
+remove_overlays` combination without a fallback flag. Both locales and INFO_CARD/GENERATE cover
+successful final-asset/photo-caption delivery, Image2/QC/upload/fetch/send failures, preference
+memory, callback behavior, omission actions and restoration of scoped cleanup when switching back.
