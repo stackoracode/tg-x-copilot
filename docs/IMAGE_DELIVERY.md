@@ -184,3 +184,49 @@ optional info_card_fallback preference, which remains only for users choosing lo
 remove_overlays` combination without a fallback flag. Both locales and INFO_CARD/GENERATE cover
 successful final-asset/photo-caption delivery, Image2/QC/upload/fetch/send failures, preference
 memory, callback behavior, omission actions and restoration of scoped cleanup when switching back.
+
+
+## Automatic publishing-bundle mode
+
+The personal preference `workflow_mode=auto_bundle` lives under the existing
+`image_preferences:<user_id>` settings record. `/images` and Image Tools expose a remembered
+on/off toggle (`it:<scope>:w:auto_bundle` / `manual`). This is not editing authorization:
+`pipeline.direct_uploads_owned`, owned source IDs and per-image rights records remain unchanged.
+Manual preferences are retained intact for later use.
+
+At intake the workflow resolver selects RECREATE for image-bearing input and GENERATE for
+text-only input, preserving locale/density preferences and enforcing an original redesign rather
+than source patching. Every valid source image is analyzed, then recreated as an original
+localized visual; real-person/news photos become non-documentary information cards. Ordinary
+text-free photos can use explicit visible Vision observations as fact evidence when OCR is empty;
+identities/locations/dates are never guessed, sensitive source evidence is excluded, and factual
+verification plus final source-aware Vision QC remain mandatory.
+
+Only opted-in users get 3-second burst grouping (native albums + nearby text), isolated by
+(chat,user), deduplicated/sorted by message ID. A burst is bounded by 20 messages / 12 seconds;
+after that it flushes to the same durable Queue/Worker architecture. Pending buffers flush before
+worker shutdown, and arrivals during shutdown go directly to durable intake. Manual grouping
+behavior is preserved. Automatic intake suppresses extra queued/status messages so the final
+publishing bundle is the main response.
+
+Jev still runs; its skip judgment on requested usable content is retained as a review warning
+while the main evaluator checks the content. Pure promotion, unusable/empty evidence, sensitive
+content and fabricated claims are not forced through. New visuals use source-focused verified
+facts. A failed image QC gets at most one automatic correction generation, with the same facts,
+language and focus; both results require QC, and failures still produce explicit REVIEW stages.
+Image count respects the existing X limit (normally four). Extra successfully analyzed sources
+are not individually output/reviewed merely because of that limit; actual failures remain visible.
+
+Single-photo caption bundles have direct **Redo images** (`t:i:<task_id>`) and **Image Tools**
+buttons. Telegram albums use an associated review-card reply because album sends do not have an
+inline-keyboard parameter; see the official [Telegram album API](https://core.telegram.org/bots/api#sendmediagroup)
+and [Telethon send_file](https://docs.telethon.dev/en/stable/modules/client.html#telethon.client.uploads.UploadMethods.send_file).
+Redo checks both owner and chat, then queues only image work using automatic defaults. Explicit
+Image Tools reruns can select a manual action for one task while the personal auto mode stays on.
+No action automatically approves or publishes to X, and the existing draft remains unchanged on
+image-only reruns.
+
+`tests/test_auto_bundles.py` covers profile persistence, resolver behavior, burst isolation and
+shutdown flushing, quiet intake, full forward→worker→R2→photo-caption delivery in both locales,
+text/image/album paths, photo-only evidence, count limits, QC correction, direct callbacks and
+one-task overrides. Tests use isolated transports; they do not generate paid production images.

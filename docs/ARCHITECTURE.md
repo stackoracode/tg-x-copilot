@@ -59,9 +59,10 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
 
 ## Data flow (one task)
 
-1. **Intake.** Each regular message from an allowed user becomes its own task, even if
-   several unrelated forwards arrive at the same moment. A Telegram album (one `grouped_id`,
-   delivered by Telethon as `events.Album`) is the only automatic grouping.
+1. **Intake.** Manual mode keeps one task per message or native album. A user's explicitly
+   enabled automatic-bundle mode groups 3-second forwarding bursts per chat/user, deduplicating
+   and sorting message IDs. The collector flushes before worker shutdown; normalized bundles
+   enter the existing durable MySQL + Queue architecture.
 2. **Normalize.** `normalize()` builds an `InputEnvelope`: deduplicated text, URLs, a media
    *descriptor* list, forward origins, and the locale and market. No media is downloaded yet.
 3. **Persist and enqueue.** A `tasks` row is written (`received`) and its `task_id` goes on
@@ -341,8 +342,9 @@ at MVP volume. A thread-confined pool can replace it later behind the same async
 - Visual QC is mandatory for every image-model output.
 - PyMySQL: one connection per operation, confined to one thread (the old shared pool could
   hand a connection to different executor threads).
-- The merge-window collector is removed. Unrelated forwards are separate tasks; only albums
-  are grouped.
+- Manual mode preserves separate unrelated forwards and native albums. Only the explicitly
+  enabled personal automatic-bundle workflow uses bounded burst collection; shutdown flushes
+  pending messages before the workers drain.
 - API keys are env-only and never stored in MySQL (`sql/003_reliability.sql` cleans up old
   rows).
 - LLM background facts require review. The "approve (reviewed)" path covers non-blocking

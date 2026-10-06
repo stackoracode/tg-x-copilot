@@ -49,7 +49,7 @@ policy, concurrency, and content rules. See [image delivery diagnostics](docs/IM
 for scoped promotion cleanup and attachment failure stages.
 
 ```
-Telegram ─▶ Bot (1 msg or 1 album) ─▶ normalize ─▶ MySQL + Queue ─▶ Workers (atomic claim)
+Telegram ─▶ Bot (message / album / opted-in burst) ─▶ normalize ─▶ MySQL + Queue ─▶ Workers (atomic claim)
                                                                         │
   Jev /v1/systemone (text-only triage) ──skip──▶ done (nothing stored) ◀┤
                                                                         ▼
@@ -169,14 +169,15 @@ The admin UI listens on `127.0.0.1:8080`. Open it through an SSH tunnel:
   - **🔄 Refresh models** reads CPA `/v1/models` and TypeSafe `/v1/models`.
   - **🩺 Test connections** checks MySQL, R2, R2 budget usage, CPA, Jev, and Telegram.
   - **📋 Recent tasks** lists the latest tasks.
-- Forward posts. **Each regular message becomes its own task**, even when several arrive at
-  the same moment. Only a Telegram **album** (media sent as one group) is grouped into a
-  single task.
-- Each draft arrives as three parts:
-  - the final images;
-  - a review card with ⛔ blocking problems, 🔎 items to review, image decisions with
-    reasons, and duplicate warnings;
-  - the plain post text.
+- In manual mode, each regular forward or Telegram album becomes its own task.
+- Enable **Automatic publishing bundle** in Image Tools for a remembered personal workflow:
+  forwards within 3 seconds form one task; source images are recreated as original visuals,
+  and text-only input receives an original information card. No source-edit permission dialog
+  is needed, because this mode does not edit/repost the original files.
+- Final images carry the X draft as a caption. A related review card shows ⛔ blocking problems,
+  🔎 items to review, image decisions and warnings. Single-photo bundles also carry **Redo images**
+  and **Image Tools** buttons; albums use the related card. Oversize captions remain intact in a
+  related text reply. Image-only reruns keep the draft unchanged.
 
   If images can't be fetched, the card says so and the text is still sent.
 - **`draft_ready`** means every check passed, and you can **Approve**.

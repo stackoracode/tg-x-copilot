@@ -72,12 +72,12 @@ def test_catalogs_have_identical_keys_and_format_parameters():
 def test_all_editorial_prompts_and_knowledge_are_locale_specific(code):
     root = Path(prompts.__file__).parent
     names = ['extract_core', 'evaluate', 'rewrite', 'vision_analyze', 'image_enhance',
-             'image_localize', 'image_regenerate', 'image_qc', 'language_check', 'image_execute', 'image_cleanup', 'verified_facts', 'verify_facts']
+             'image_localize', 'image_regenerate', 'image_qc', 'language_check', 'image_execute', 'image_cleanup', 'image_retry', 'auto_evaluate', 'verified_facts', 'verify_facts']
     values = {key: 'test' for key in (
         'market', 'language_name', 'strings', 'text', 'triage', 'urls', 'image_notes',
         'source_info', 'max_chars', 'max_hashtags', 'max_emojis', 'style', 'banned_phrases',
         'hooks', 'angle', 'audience', 'key_facts', 'background_points', 'risks', 'feedback',
-        'size', 'post', 'brief', 'facts', 'mode', 'mode_rules', 'reference_text', 'images_note', 'density', 'density_rules', 'target_locale', 'layout', 'action', 'action_rules', 'options', 'sources', 'packet', 'cleanup_contract')}
+        'size', 'post', 'brief', 'facts', 'mode', 'mode_rules', 'reference_text', 'images_note', 'density', 'density_rules', 'target_locale', 'layout', 'action', 'action_rules', 'options', 'sources', 'packet', 'cleanup_contract', 'failure')}
     for name in names:
         assert (root / code / f'{name}.md').exists()
         rendered = prompts.render(name, code, **values)
