@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import io
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -17,6 +18,8 @@ from telethon import Button, TelegramClient, events
 from ..i18n import label
 from ..models import MediaFailureStage, TaskStatus
 from ..pipeline.media import inspect_image
+from ..pipeline.media_errors import media_error_reason
+from ..pipeline.image_policy import needs_edit_confirmation
 from .image_tools import ImageTools
 from ..logging_setup import ctx
 
@@ -92,7 +95,7 @@ class TelegramBot:
                 log.exception("media download failed", extra=ctx(message_id=m.id))
         return out
 
-    async def send_draft(self, task_id: str) -> None:
+    async def send_draft(self, task_id: str, *, only_indices: set[int] | None = None) -> None:
         app = self.app
         task = await app.repo.get_task(task_id)
         if not task:
@@ -106,8 +109,12 @@ class TelegramBot:
 
         # Delivery is a separate, recorded step; processing/QC success alone is not delivery.
         files: list[tuple[int, io.BytesIO]] = []
-        delivery: dict[str, dict[str, Any]] = {}
-        failures: dict[int, tuple[MediaFailureStage, str]] = {}
+        delivery: dict[str, dict[str, Any]] = (dict(meta.get("delivery") or {}) if only_indices is not None else {})
+        failures: dict[int, tuple[MediaFailureStage, str]] = {
+            int(key): (MediaFailureStage(receipt["failure_stage"]), receipt["reason"])
+            for key, receipt in delivery.items() if receipt.get("failure_stage")
+            and (only_indices is None or int(key) not in only_indices)
+        }
         pipeline_meta = {entry["idx"]: entry for entry in meta.get("media") or []}
 
         def fail(idx: int, stage: MediaFailureStage, reason: str) -> None:
@@ -116,6 +123,8 @@ class TelegramBot:
 
         for m in media:
             idx = m["idx"]
+            if only_indices is not None and idx not in only_indices:
+                continue
             if m.get("decision") in ("omit", "text_only"):
                 delivery[str(idx)] = {"sent": False, "omitted": True}
                 continue
@@ -142,9 +151,9 @@ class TelegramBot:
                 # a URL/path message or anonymous application/octet-stream document.
                 bio.name = f"{task_id[:8]}-{idx}.{blob.ext}"
                 files.append((idx, bio))
-            except Exception:
+            except Exception as exc:
                 log.exception("R2 final asset fetch failed", extra=ctx(task_id=task_id, idx=idx))
-                fail(idx, MediaFailureStage.R2_FETCH, tr("media_stage_fetch"))
+                fail(idx, MediaFailureStage.R2_FETCH, tr("media_stage_fetch") + " " + media_error_reason(exc, locale))
 
         for offset in range(0, len(files), 10):
             batch = files[offset:offset + 10]
@@ -157,10 +166,10 @@ class TelegramBot:
                         fail(idx, MediaFailureStage.TELEGRAM_SEND, tr("media_stage_send"))
                     else:
                         delivery[str(idx)] = {"sent": True, "message_id": getattr(message, "id", None)}
-            except Exception:
+            except Exception as exc:
                 log.exception("Telegram photo send failed", extra=ctx(task_id=task_id))
                 for idx, _ in batch:
-                    fail(idx, MediaFailureStage.TELEGRAM_SEND, tr("media_stage_send"))
+                    fail(idx, MediaFailureStage.TELEGRAM_SEND, tr("media_stage_send") + " " + media_error_reason(exc, locale))
         files.clear()
         for idx, (stage, reason) in failures.items():
             try:
@@ -196,7 +205,9 @@ class TelegramBot:
                 idx = m["idx"]
                 if idx in failures:
                     stage, reason = failures[idx]
-                    lines.append(tr("media_stage_failure", idx=idx, stage=stage.value, reason=esc(reason)))
+                    display_stage = "IMAGE_QC" if stage == MediaFailureStage.QC else stage.value
+                    clean_reason = reason.removeprefix(f"[{stage.value}] ")
+                    lines.append(tr("media_stage_failure", idx=idx, stage=display_stage, reason=esc(clean_reason)))
                 elif delivery.get(str(idx), {}).get("sent"):
                     lines.append(tr("media_delivery_sent", idx=idx))
                 elif delivery.get(str(idx), {}).get("omitted"):
@@ -220,7 +231,10 @@ class TelegramBot:
         if meta.get("image_locale") and meta["image_locale"] != locale:
             lines.append(tr("image_target_locale", locale=meta["image_locale"]))
         image_button = Button.inline(tr("btn_image_tools"), f"it:{task_id}:v:main".encode())
-        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, [image_button]])
+        auth_buttons = [[Button.inline(tr("btn_confirm_edit_rights", idx=m["idx"]),
+                                       f"ia:{task_id}:{m['idx']}".encode())]
+                        for m in media if needs_edit_confirmation(task, m)]
+        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, *auth_buttons, [image_button]])
         if task.get("draft_text"):
             await self.client.send_message(chat_id, task["draft_text"], parse_mode=None,
                                            link_preview=False)
@@ -282,7 +296,16 @@ class TelegramBot:
         data = event.data.decode(errors="ignore")
         ops = self.app.ops
         try:
-            if data.startswith("it:"):
+            if data.startswith("ia:"):
+                await event.answer()
+                match = re.fullmatch(r"ia:([0-9a-f]{32}):([0-9]{1,3})", data)
+                if not match:
+                    await event.respond(self.t("edit_auth_stale"))
+                    return
+                _, message = await ops.authorize_image_edit(match[1], event.sender_id,
+                                                           event.chat_id, int(match[2]))
+                await event.respond(message)
+            elif data.startswith("it:"):
                 await ImageTools(self).handle(event, data)
             elif data == "m:menu":
                 await event.answer()

@@ -6,7 +6,7 @@ import json
 import uuid
 from typing import Any
 
-from ..models import InputEnvelope, TaskStatus
+from ..models import InputEnvelope, TaskStatus, ImageEditAuthorization
 from ..image_settings import ImagePreferences
 from .pool import Database
 
@@ -53,7 +53,7 @@ class Repository:
         """Regeneration adopts current language; original source content stays intact."""
         await self.db.execute(
             "UPDATE tasks SET locale=%s, market=%s, envelope=JSON_SET(envelope,"
-            " '$.locale', %s, '$.market', %s, '$.processing_mode', 'full') WHERE id=%s",
+            " '$.locale', %s, '$.market', %s, '$.processing_mode', 'full', '$.image_retry_indices', NULL) WHERE id=%s",
             (locale, market, locale, market, task_id))
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
@@ -321,11 +321,29 @@ class Repository:
         n = await self.db.execute(
             "UPDATE tasks SET status=%s, stage='images_queued', error=NULL,"
             " envelope=JSON_SET(envelope, '$.processing_mode', 'images_only',"
-            " '$.image_action', %s, '$.image_options', JSON_EXTRACT(%s, '$'))"
+            " '$.image_action', %s, '$.image_options', JSON_EXTRACT(%s, '$'), '$.image_retry_indices', NULL)"
             " WHERE id=%s AND tg_user_id=%s AND status IN (%s,%s) AND draft_text IS NOT NULL",
             (TaskStatus.RECEIVED.value, preferences.image_action.value if preferences.image_action
              else None, _dumps(preferences.image_options), task_id, user_id,
              TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value))
+        return n == 1
+
+    async def authorize_image_edit(self, task_id: str, user_id: int, chat_id: int,
+                                   authorization: ImageEditAuthorization, expected_reason: str) -> bool:
+        idx = authorization.image_idx
+        n = await self.db.execute(
+            "UPDATE tasks t JOIN task_media m ON m.task_id=t.id AND m.idx=%s "
+            "SET t.status=%s, t.stage='images_queued', t.error=NULL, "
+            "t.envelope=JSON_SET(t.envelope, '$.processing_mode', 'images_only', "
+            "'$.image_retry_indices', JSON_EXTRACT(%s, '$'), "
+            "'$.image_edit_authorizations', JSON_SET(COALESCE(JSON_EXTRACT(t.envelope, "
+            "'$.image_edit_authorizations'), JSON_OBJECT()), %s, JSON_EXTRACT(%s, '$'))) "
+            "WHERE t.id=%s AND t.tg_user_id=%s AND t.tg_chat_id=%s "
+            "AND t.status IN (%s,%s) AND t.draft_text IS NOT NULL "
+            "AND m.decision='review' AND m.decision_reason=%s AND m.source_sha256=%s",
+            (idx, TaskStatus.RECEIVED.value, _dumps([idx]), '$."' + str(idx) + '"',
+             _dumps(authorization), task_id, user_id, chat_id, TaskStatus.DRAFT_READY.value,
+             TaskStatus.NEEDS_REVIEW.value, expected_reason, authorization.source_sha256))
         return n == 1
 
     async def delete_media_rows(self, task_id: str) -> None:

@@ -34,7 +34,8 @@ from ..services.storage import StorageBudgetExceeded
 from .cleaning import clean_bundle
 from .guards import GuardReport, XRules, check_rewrite, x_length
 from .language import is_localized
-from .image_policy import plan, media_is_owned
+from .image_policy import plan, media_is_owned, has_task_edit_authorization
+from .media_errors import media_error_reason
 from .facts import build_verified_facts, packet_is_traceable
 from .overlays import (approved_regions, wants_region_edit, crop_region, composite_patches,
                        unchanged_outside, validate_pixel_scope)
@@ -286,11 +287,14 @@ class Pipeline:
             except Exception:
                 log.exception("notify skipped failed")
 
-    async def _notify_draft(self, task_id: str) -> None:
+    async def _notify_draft(self, task_id: str, *, only_indices: set[int] | None = None) -> None:
         if not self.app.telegram:
             return
         try:
-            await self.app.telegram.send_draft(task_id)
+            if only_indices is None:
+                await self.app.telegram.send_draft(task_id)
+            else:
+                await self.app.telegram.send_draft(task_id, only_indices=only_indices)
         except Exception:
             log.exception("sending draft to Telegram failed")
             await self._event(task_id, "notify", "sending draft to Telegram failed", level="warning")
@@ -331,7 +335,7 @@ class Pipeline:
         return decide_route(resp, cfg, has_text=True, has_media=has_media, locale=env.locale)
 
     async def _load_media(self, task_id: str, env: InputEnvelope, cfg: AppSettings, *,
-                          use: bool) -> tuple[list[LoadedImage], list[str]]:
+                          use: bool, only_indices: set[int] | None = None) -> tuple[list[LoadedImage], list[str]]:
         repo = self.app.repo
         max_bytes = cfg.pipeline.max_media_bytes
 
@@ -341,8 +345,8 @@ class Pipeline:
             await repo.update_media_decision(task_id, idx, ImageDecision.REVIEW.value, reason)
 
         wanted = [
-            sm.message_id for sm in env.media
-            if use and sm.kind in _IMAGE_KINDS and (sm.size or 0) <= max_bytes
+            sm.message_id for idx, sm in enumerate(env.media)
+            if (only_indices is None or idx in only_indices) and use and sm.kind in _IMAGE_KINDS and (sm.size or 0) <= max_bytes
         ]
         downloaded: dict[int, bytes] = {}
         download_error = t(env.locale, "media_deleted")
@@ -361,6 +365,8 @@ class Pipeline:
         loaded: list[LoadedImage] = []
         warnings: list[str] = []
         for idx, sm in enumerate(env.media):
+            if only_indices is not None and idx not in only_indices:
+                continue
             if not use:
                 await review(idx, sm, t(env.locale, "media_unused"))
                 continue
@@ -532,9 +538,11 @@ class Pipeline:
 
     async def _ensure_media_rows(self, task_id: str, env: InputEnvelope,
                                  images: list[LoadedImage], outcomes: list[ImageOutcome],
-                                 analyses: dict[int, ImageAnalysis]) -> None:
+                                 analyses: dict[int, ImageAnalysis], *, only_indices: set[int] | None = None) -> None:
         loaded = {image.idx: image for image in images}
         for idx, source in enumerate(env.media):
+            if only_indices is not None and idx not in only_indices:
+                continue
             blob = loaded[idx].blob if idx in loaded else None
             await self.app.repo.upsert_media(task_id, idx, message_id=source.message_id,
                 kind=source.kind.value, mime=blob.mime if blob else source.mime,
@@ -552,7 +560,8 @@ class Pipeline:
     async def _process_images(self, task_id: str, env: InputEnvelope, images: list[LoadedImage],
                               analyses: dict[int, ImageAnalysis], rewrite: RewriteResult,
                               evaluation: Evaluation, locale: Locale, cfg: AppSettings, *,
-                              verified_facts: VerifiedFacts | None = None, max_images: int = 4
+                              verified_facts: VerifiedFacts | None = None, max_images: int = 4,
+                              only_indices: set[int] | None = None
                               ) -> list[ImageOutcome]:
         """Registry-driven strategies; generators receive confirmed packets, never raw intake."""
         locale = self.app.i18n.get(env.image_options.target_locale or locale.code)
@@ -563,6 +572,8 @@ class Pipeline:
         action, options = env.image_action, env.image_options
         selected = ACTIONS.get(action)
         regional_edit = wants_region_edit(action, options)
+        if only_indices is not None:
+            images = [image for image in images if image.idx in only_indices]
         m, hub, limits = cfg.models, self.app.hub, self.app.limits
         rules = prompts.render_json("image_actions", locale.code)
         option_rules = "\n".join(rules["options"][flag.value] for flag in sorted(options.flags))
@@ -632,16 +643,16 @@ class Pipeline:
                 await self._event(task_id, "IMAGE2", f"image {idx}: output produced")
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 log.exception("image execution failed")
                 await self._event(task_id, "IMAGE2", f"image {idx}: processing failed", level="warning")
-                return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "media_stage_image2"),
+                return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "media_stage_image2") + " " + media_error_reason(exc, ui_locale),
                                     failure_stage=MediaFailureStage.IMAGE2)
             passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
                 facts=packet.text, post=rewrite.post,
                 source_text=(analyses[reference.idx].extracted_text if reference else ""),
-                cleanup_contract=cleanup_contract, cleanup_regions=regions)
-            await self._event(task_id, "QC", f"image {idx}: {'passed' if passed else qc_reason}",
+                cleanup_contract=cleanup_contract, cleanup_regions=regions, task_id=task_id)
+            await self._event(task_id, "IMAGE_QC", f"image {idx}: {'passed' if passed else qc_reason}",
                               level="info" if passed else "warning")
             if not passed:
                 return ImageOutcome(idx, ImageDecision.REVIEW,
@@ -653,7 +664,7 @@ class Pipeline:
         if selected and selected.execution == "omit":
             return [ImageOutcome(idx, ImageDecision._value2member_map_.get(action.value, action),
                     t(ui_locale, "image_action_reason", action=t(ui_locale, "image_action_" + action.value)))
-                    for idx in range(len(env.media))]
+                    for idx in range(len(env.media)) if only_indices is None or idx in only_indices]
         if selected and selected.text_capable and not (regional_edit and env.media):
             # One original publishing visual for the canonical task, including text-only input.
             omitted = [ImageOutcome(idx, ImageDecision.OMIT, t(ui_locale, "image_action_omit"))
@@ -669,6 +680,9 @@ class Pipeline:
         async def one(image: LoadedImage) -> ImageOutcome:
             owned = media_is_owned(image.source, env, owned_ids=set(cfg.pipeline.owned_source_ids),
                                    direct_uploads_owned=cfg.pipeline.direct_uploads_owned)
+            if regional_edit:
+                owned = owned or has_task_edit_authorization(env, task_id=task_id, idx=image.idx,
+                                                             source_sha256=image.blob.sha256)
             resolved = plan(analyses[image.idx], requested=action, options=options, owned=owned,
                             target_language=locale.language_tag, locale=ui_locale, idx=image.idx)
             if resolved.execution == "review":
@@ -689,11 +703,12 @@ class Pipeline:
             else:
                 final.append(result)
         present = {result.idx for result in final}
-        missing = [idx for idx in range(len(env.media)) if idx not in present]
+        missing = [idx for idx in range(len(env.media)) if idx not in present
+                   and (only_indices is None or idx in only_indices)]
         records = await self.app.repo.list_media(task_id) if missing else []
         failure_reasons = {row["idx"]: row.get("decision_reason") for row in records
                            if row.get("decision") == ImageDecision.REVIEW.value}
-        for idx in range(len(env.media)):
+        for idx in missing:
             if idx not in present:
                 final.append(ImageOutcome(idx, ImageDecision.REVIEW,
                     (failure_reasons.get(idx) or t(ui_locale, "vision_failed")) if idx < max_images else
@@ -707,7 +722,10 @@ class Pipeline:
         meta = dict(task.get("draft_meta") or {})
         if not task.get("draft_text"):
             raise ValueError("image-only task has no draft")
+        only_indices = set(env.image_retry_indices) if env.image_retry_indices is not None else None
         canonical = meta.get("canonical_text")
+        if canonical is None and only_indices is not None:
+            canonical = env.text  # no editorial extraction on an authorization retry
         if canonical is None:  # Backfill facts for drafts created before this feature.
             env, _ = await clean_bundle(env, self.app)
         else:
@@ -719,13 +737,15 @@ class Pipeline:
         spec = ACTIONS.get(env.image_action)
         need_source = (spec is None or (spec.execution != "omit" and not spec.text_capable) or
                        wants_region_edit(env.image_action, env.image_options))
-        images, warnings = (await self._load_media(task_id, env, cfg, use=True)
+        images, warnings = (await self._load_media(task_id, env, cfg, use=True, only_indices=only_indices)
                             if need_source else ([], []))
         try:
             analyses = await self._analyze(task_id, env, images, locale, cfg) if images else {}
             packet = VerifiedFacts.model_validate(meta.get("verified_facts") or {})
             fact_warnings = []
-            if (spec is None or spec.execution in ("edit", "create")) and not packet_is_traceable(packet, env.text, sources):
+            if (not wants_region_edit(env.image_action, env.image_options) and
+                (spec is None or spec.execution in ("edit", "create")) and
+                not packet_is_traceable(packet, env.text, sources)):
                 # Fresh facts may use persisted source OCR, never old editorial background.
                 packet, fact_warnings = await self._fact_packet(task_id, env, {**sources, **analyses})
             rules = XRules.from_db({**prompts.render_json("knowledge", locale.code)["rules"],
@@ -736,15 +756,26 @@ class Pipeline:
                                  else {**sources, **analyses})
             outcomes = await self._process_images(task_id, env, images[:rules.max_images], execution_analyses,
                 rewrite, Evaluation(suitable=True, value_score=0), locale, cfg,
-                verified_facts=packet, max_images=rules.max_images)
+                verified_facts=packet, max_images=rules.max_images, only_indices=only_indices)
             # Only replace assets after execution/QC; reference counting and R2 policy stay intact.
-            await self.app.storage.release_task(task_id)
-            await self.app.repo.delete_media_rows(task_id)
-            await self._ensure_media_rows(task_id, env, images, outcomes, analyses)
+            if only_indices is None:
+                await self.app.storage.release_task(task_id)
+                await self.app.repo.delete_media_rows(task_id)
+            else:
+                await self.app.storage.release_task(task_id, indices=only_indices)
+            await self._ensure_media_rows(task_id, env, images, outcomes, analyses, only_indices=only_indices)
             results = await self._persist(task_id, images, outcomes, analyses, cfg,
                                          locale=env.locale)
+            if only_indices is not None:
+                combined = {r["idx"]: r for r in meta.get("media") or [] if r["idx"] not in only_indices}
+                combined.update({r.idx: r.model_dump(mode="json") for r in results})
+                merged_media = list(combined.values())
+                meta["delivery"] = {key: value for key, value in (meta.get("delivery") or {}).items()
+                                    if int(key) not in only_indices}
+            else:
+                merged_media = [r.model_dump(mode="json") for r in results]
             text_review = list(meta.get("text_review", meta.get("review") or []))
-            media_review = [result for result in results if result.decision == ImageDecision.REVIEW]
+            media_review = [result for result in merged_media if result["decision"] == ImageDecision.REVIEW.value]
             review = text_review + ([t(env.locale, "images_review", count=len(media_review))]
                                     if media_review else [])
             meta.update(verified_facts=packet.model_dump(mode="json"), canonical_text=env.text,
@@ -753,18 +784,18 @@ class Pipeline:
                 image_options=env.image_options.model_dump(mode="json"),
                 image_locale=env.image_options.target_locale or env.locale, review=review,
                 text_review=text_review, warnings=list(meta.get("text_warnings", meta.get("warnings") or []))
-                + warnings + fact_warnings, media=[result.model_dump(mode="json") for result in results])
+                + warnings + fact_warnings, media=merged_media)
             status = TaskStatus.NEEDS_REVIEW if review or meta.get("problems") else TaskStatus.DRAFT_READY
             await self.app.repo.save_draft(task_id, status, task["draft_text"], meta)
             await self._event(task_id, "images", "image-only job finished; draft unchanged")
-            await self._notify_draft(task_id)
+            await self._notify_draft(task_id, only_indices=only_indices)
         finally:
             images.clear()
 
     async def _qc(self, env: InputEnvelope, locale: Locale, cfg: AppSettings, mode: QCMode,
                   candidate: ImageBlob, reference: LoadedImage | None, *, facts: str, post: str,
                   source_text: str = "", cleanup_contract: str = "",
-                  cleanup_regions: list[MarkRegion] | None = None
+                  cleanup_regions: list[MarkRegion] | None = None, task_id: str = ""
                   ) -> tuple[bool, str]:
         """Visual verification of one Image2 output. Errors count as a failed check."""
         allowed = [facts]  # generated draft is never verification evidence
@@ -777,8 +808,10 @@ class Pipeline:
                     contract.get("explicit_promotion_removal") is not True or
                     contract.get("selected_regions") != [r.model_dump(mode="json") for r in cleanup_regions] or
                     not wants_region_edit(env.image_action, env.image_options) or
-                    not media_is_owned(reference.source, env, owned_ids=set(cfg.pipeline.owned_source_ids),
-                                       direct_uploads_owned=cfg.pipeline.direct_uploads_owned)):
+                    not (media_is_owned(reference.source, env, owned_ids=set(cfg.pipeline.owned_source_ids),
+                                       direct_uploads_owned=cfg.pipeline.direct_uploads_owned) or
+                         has_task_edit_authorization(env, task_id=task_id, idx=reference.idx,
+                                                     source_sha256=reference.blob.sha256))):
                     return False, t(env.locale, "cleanup_scope_required")
             except (ValueError, AttributeError):
                 return False, t(env.locale, "cleanup_scope_required")
@@ -851,6 +884,8 @@ class Pipeline:
                 note = mask(f"{label}: {exc}")[:300]
                 upload_reason = t(locale, "storage_budget" if isinstance(exc, StorageBudgetExceeded)
                                   else "storage_failed")
+                if not isinstance(exc, StorageBudgetExceeded):
+                    upload_reason += " " + media_error_reason(exc, locale)
                 if failure_stage is None:
                     failure_stage, reason = MediaFailureStage.R2_UPLOAD, upload_reason
                 else:

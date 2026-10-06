@@ -67,6 +67,14 @@ class ForwardOrigin(BaseModel):
     date: datetime | None = None
 
 
+class ImageEditAuthorization(BaseModel):
+    task_id: str = Field(pattern=r"^[0-9a-f]{32}$")
+    image_idx: int = Field(ge=0)
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    user_id: int
+    confirmed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class InputEnvelope(BaseModel):
     """Normalized representation of one or more forwarded Telegram messages."""
 
@@ -83,6 +91,8 @@ class InputEnvelope(BaseModel):
     image_action: ImageAction | None = None
     image_options: ImageOptions = Field(default_factory=ImageOptions)
     processing_mode: Literal["full", "images_only"] = "full"
+    image_retry_indices: list[int] | None = None
+    image_edit_authorizations: dict[str, ImageEditAuthorization] = Field(default_factory=dict)
     locale: str = "en-US"
     market: str = "US"
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..logging_setup import mask
 from ..i18n import label
-from ..models import TaskStatus
+from ..models import TaskStatus, ImageEditAuthorization
+from ..pipeline.image_policy import needs_edit_confirmation
 from ..image_settings import ImagePreferences
 
 if TYPE_CHECKING:
@@ -201,6 +202,28 @@ class Ops:
         if not await self.app.workers.enqueue(task_id, wait=False):
             return True, self.t("ops_busy")
         return True, self.t("ops_queued")
+
+    async def authorize_image_edit(self, task_id: str, user_id: int, chat_id: int,
+                                   idx: int) -> tuple[bool, str]:
+        task = await self.app.repo.get_task(task_id)
+        tr = lambda key: self.app.i18n.t(task.get("locale", self.app.config.current.default_locale)
+                                       if task else self.app.config.current.default_locale, key)
+        if not task or task.get("tg_user_id") != user_id or task.get("tg_chat_id") != chat_id:
+            return False, tr("image_tools_owner")
+        if task["status"] not in ("draft_ready", "needs_review") or not task.get("draft_text"):
+            return False, tr("edit_auth_stale")
+        media = next((m for m in await self.app.repo.list_media(task_id) if m["idx"] == idx), None)
+        if not media or not needs_edit_confirmation(task, media):
+            return False, tr("edit_auth_stale")
+        authorization = ImageEditAuthorization(task_id=task_id, image_idx=idx, user_id=user_id,
+                                              source_sha256=media["source_sha256"])
+        if not await self.app.repo.authorize_image_edit(task_id, user_id, chat_id, authorization,
+                                                       media["decision_reason"]):
+            return False, tr("edit_auth_stale")
+        await self.app.repo.add_event(task_id, "IMAGE_POLICY", "explicit image editing rights confirmed",
+                                      data=authorization.model_dump(mode="json"))
+        await self.app.workers.enqueue(task_id, wait=False)
+        return True, tr("edit_auth_queued")
 
     async def rerun_images(self, task_id: str, user_id: int,
                            preferences: ImagePreferences) -> tuple[bool, str]:

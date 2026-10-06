@@ -61,6 +61,28 @@ def media_is_owned(media: SourceMedia, env: InputEnvelope, *, owned_ids: set[int
     return direct_uploads_owned
 
 
+def has_task_edit_authorization(env: InputEnvelope, *, task_id: str, idx: int,
+                                source_sha256: str) -> bool:
+    authorization = env.image_edit_authorizations.get(str(idx))
+    return bool(authorization and authorization.task_id == task_id and
+                authorization.image_idx == idx and authorization.user_id == env.user_id and
+                authorization.source_sha256 == source_sha256)
+
+
+def needs_edit_confirmation(task: dict, media: dict) -> bool:
+    """Offer confirmation only for this specific rights-blocked promotion-cleanup result."""
+    if not task.get("envelope") or media.get("decision") != "review":
+        return False
+    try:
+        env = InputEnvelope.model_validate(task["envelope"])
+    except ValueError:
+        return False
+    expected = t(task.get("locale", env.locale), "cleanup_rights_required")
+    reason = media.get("decision_reason") or ""
+    return (media.get("decision") == "review" and reason in (expected, "[IMAGE_POLICY] " + expected)
+            and bool(media.get("source_sha256")) and wants_region_edit(env.image_action, env.image_options))
+
+
 # Primary actions resolve into a handful of reusable execution strategies.
 
 

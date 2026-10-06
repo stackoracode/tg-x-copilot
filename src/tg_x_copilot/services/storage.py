@@ -64,12 +64,14 @@ class AssetStore:
             raise AssetAttachmentError("final asset could not be attached to its media row")
         return key
 
-    async def release_task(self, task_id: str, kinds: tuple[str, ...] = ("final", "review")
-                           ) -> int:
+    async def release_task(self, task_id: str, kinds: tuple[str, ...] = ("final", "review"),
+                           *, indices: set[int] | None = None) -> int:
         """Detach this task's assets of the given kinds; delete objects nobody references."""
         repo, r2 = self.app.repo, self.app.hub.r2
         deleted = 0
         for m in await repo.list_media(task_id):
+            if indices is not None and m["idx"] not in indices:
+                continue
             key = m.get("asset_key")
             if not key or m.get("asset_kind") not in kinds:
                 continue

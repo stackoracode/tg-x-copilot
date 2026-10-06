@@ -282,7 +282,7 @@
     "image_tools_not_ready": "This task is busy or has no draft yet.",
     "image_tools_owner": "This task belongs to another operator or chat.",
     "image_action_reason": "Selected image action: {action}.",
-    "image_rights_required": "Keeping/enhancing this source requires confirmed rights and no third-party overlays.",
+    "image_rights_required": "Keeping or enhancing this source requires confirmed editing rights.",
     "image_facts_unavailable": "No verified fact packet is available; generated images need review.",
     "image_rerun_failed": "Image processing failed. The text draft is unchanged.",
     "image_target_locale": "Image language: {locale}.",
@@ -337,7 +337,15 @@
     "cleanup_regions": "Promotion regions",
     "cleanup_regions_help": "Only identified promotion regions can be selected. An empty selection means all clearly identified safe promotion regions; protected attribution is never removable.",
     "cleanup_region_label": "Image {idx} / region {region}",
-    "cleanup_task_required": "Open Image Tools from a task to select specific regions."
-  },
-  "image_rights_required": "Keeping or enhancing this source requires confirmed editing rights."
+    "cleanup_task_required": "Open Image Tools from a task to select specific regions.",
+    "btn_confirm_edit_rights": "✅ I confirm I have editing rights for this image (#{idx})",
+    "edit_auth_queued": "Editing rights confirmed for this image only. Its image pipeline is queued; the X draft stays unchanged.",
+    "edit_auth_stale": "This confirmation is no longer available. Open the latest review card.",
+    "error_connection": "Connection to the service failed.",
+    "error_timeout": "The service timed out.",
+    "error_invalid_image": "The service returned unreadable image data.",
+    "error_http": "The upstream service returned HTTP {status}.",
+    "error_rejected": "The service rejected or could not complete the request.",
+    "label_promotion_cleanup": "local promotion cleanup"
+  }
 }

@@ -282,7 +282,7 @@
     "image_tools_not_ready": "此任务正在处理或尚无草稿。",
     "image_tools_owner": "此任务属于其他用户或会话。",
     "image_action_reason": "所选图片操作：{action}。",
-    "image_rights_required": "保留或增强此原图需要确认授权，且不能含第三方覆盖层。",
+    "image_rights_required": "保留或增强此原图需要确认编辑授权。",
     "image_facts_unavailable": "没有可用的已确认事实包，生成图片需要审核。",
     "image_rerun_failed": "图片处理失败，文案草稿保持不变。",
     "image_target_locale": "图片语言：{locale}。",
@@ -337,7 +337,15 @@
     "cleanup_regions": "推广区域",
     "cleanup_regions_help": "仅可选择已识别的推广区域；未指定区域时仅处理全部明确且安全的推广区域，来源署名和版权标识不可移除。",
     "cleanup_region_label": "图片 {idx} / 区域 {region}",
-    "cleanup_task_required": "请从任务草稿的图像工具选择具体区域。"
-  },
-  "image_rights_required": "保留或增强此原图需要确认编辑授权。"
+    "cleanup_task_required": "请从任务草稿的图像工具选择具体区域。",
+    "btn_confirm_edit_rights": "✅ 我确认拥有此图片的编辑权限（#{idx}）",
+    "edit_auth_queued": "已确认仅此任务、此图片的编辑权限，已排队重跑该图片，X 文案保持不变。",
+    "edit_auth_stale": "此授权确认已失效或图片正在处理，请查看最新审核卡片。",
+    "error_connection": "无法连接到处理服务。",
+    "error_timeout": "处理服务响应超时。",
+    "error_invalid_image": "服务返回的图片数据无效或无法读取。",
+    "error_http": "上游服务返回 HTTP {status}。",
+    "error_rejected": "服务拒绝请求或未能完成处理。",
+    "label_promotion_cleanup": "局部清除推广层"
+  }
 }

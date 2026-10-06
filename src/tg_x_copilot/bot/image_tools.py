@@ -18,6 +18,8 @@ from ..image_settings import (
     InformationDensity,
 )
 
+from ..pipeline.image_policy import needs_edit_confirmation
+
 _SCOPE = re.compile(r"(?:-|[0-9a-f]{32})\Z")
 
 
@@ -233,10 +235,16 @@ class ImageTools:
                 ),
             )
         )
+        buttons = keyboard(scope, prefs, tr, page)
+        if scope != "-" and page == "main":
+            confirm = [[Button.inline(app.i18n.t(task.get("locale"), "btn_confirm_edit_rights", idx=m["idx"]),
+                                      f"ia:{scope}:{m['idx']}".encode())]
+                       for m in await app.repo.list_media(scope) if needs_edit_confirmation(task, m)]
+            buttons[-1:-1] = confirm  # Existing cards can reach confirmation without re-running anything.
         try:
             await event.edit(
                 html.escape(text),
-                buttons=keyboard(scope, prefs, tr, page),
+                buttons=buttons,
                 link_preview=False,
             )
         except MessageNotModifiedError:
