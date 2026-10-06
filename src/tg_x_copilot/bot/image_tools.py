@@ -235,6 +235,9 @@ class ImageTools:
                 ),
             )
         )
+        if (prefs.image_action and ACTIONS[prefs.image_action].text_capable and
+            {ImageOption.MINIMAL_CHANGES, ImageOption.REMOVE_OVERLAYS} & prefs.image_options.flags):
+            text += "\n" + tr("image_tools_creation_priority")
         buttons = keyboard(scope, prefs, tr, page)
         if scope != "-" and page == "main":
             confirm = [[Button.inline(app.i18n.t(task.get("locale"), "btn_confirm_edit_rights", idx=m["idx"]),

@@ -12,12 +12,17 @@ import math
 
 from PIL import Image, ImageOps
 
-from ..image_settings import ImageAction, ImageOption, ImageOptions
+from ..image_settings import ACTIONS, ImageAction, ImageOption, ImageOptions
 from ..models import ImageAnalysis, MarkRegion
 from .media import ImageBlob
 
 
 def wants_region_edit(action: ImageAction | None, options: ImageOptions) -> bool:
+    # Explicit fact-based creation (INFO_CARD/GENERATE) wins over remembered patch options.
+    # Keep preferences intact so switching back to local cleanup restores the same choices.
+    spec = ACTIONS.get(action)
+    if spec and (spec.text_capable or spec.execution == "omit"):
+        return False
     return ImageOption.REMOVE_OVERLAYS in options.flags and (
         ImageOption.MINIMAL_CHANGES in options.flags or action == ImageAction.ENHANCE
     )

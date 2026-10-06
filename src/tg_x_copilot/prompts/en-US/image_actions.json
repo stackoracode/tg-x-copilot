@@ -19,7 +19,7 @@
     "remove_overlays": "Exclude channel/promotion overlays from NEW creations. Never erase watermarks on a source edit.",
     "factual_priority": "Prioritize factual accuracy over decorative detail.",
     "visual_priority": "Prioritize visual clarity, quality and mobile readability; never invent facts for aesthetics.",
-    "minimal_changes": "Minimize changes consistent with the action, target language and mandatory safety rules.",
+    "minimal_changes": "Minimize changes consistent with the action, target language and mandatory safety rules. For explicit INFO_CARD/GENERATE, this is a design preference for the NEW fact-based visual, never a request to patch source pixels or restore hidden UI.",
     "info_card_fallback": "Only when explicitly enabled, use a NEW verified-facts information card if a local promotion edit is unsafe. This fallback is not a minimal edit to the original."
   },
   "densities": {
