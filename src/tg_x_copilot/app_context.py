@@ -28,6 +28,7 @@ from .pipeline.worker import WorkerPool
 from .services.config_service import ConfigService
 from .services.hub import ClientHub
 from .services.ops import Ops
+from .services.image_preferences import ImagePreferenceService
 from .services.storage import AssetStore
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ class AppContext:
         self.storage = AssetStore(self)
         self.pipeline = Pipeline(self)
         self.ops = Ops(self)
+        self.image_preferences = ImagePreferenceService(self.repo)
         self.workers = WorkerPool(
             self.pipeline.process, self.pipeline.mark_failed,
             workers=settings.concurrency.workers, maxsize=settings.concurrency.queue_maxsize,
@@ -65,6 +67,9 @@ class AppContext:
         cfg = self.config.current
         env = normalize(messages, chat_id=chat_id, user_id=user_id,
                         locale=cfg.default_locale, market=cfg.market)
+        preferences = await self.image_preferences.get(user_id)
+        env.image_action = preferences.image_action
+        env.image_options = preferences.image_options
         if not env.text and not env.media:
             return
         task_id = await self.repo.create_task(env)

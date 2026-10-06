@@ -19,7 +19,7 @@ from tg_x_copilot.config import JevSettings
 from tg_x_copilot.i18n import I18n, t
 from tg_x_copilot.models import (
     Evaluation, ForwardOrigin, ImageAnalysis, ImageDecision, ImageQC, InputEnvelope,
-    MediaKind, RewriteResult, SourceMedia,
+    MediaKind, RewriteResult, SourceMedia, VerifiedFact, VerifiedFacts, FactVerification,
 )
 from tg_x_copilot.pipeline.cleaning import CoreContent, clean_bundle, preclean
 from tg_x_copilot.pipeline.guards import XRules, check_rewrite, wrong_language
@@ -52,7 +52,7 @@ def bot(app):
 
 def good_qc(**kw):
     values = dict(passed=True, text_consistent=True, language_consistent=True,
-                  numbers_consistent=True, dates_consistent=True, names_consistent=True, brands_consistent=True,
+                  numbers_consistent=True, dates_consistent=True, names_consistent=True, brands_consistent=True, identifiers_consistent=True, readability_ok=True, density_consistent=True,
                   people_consistent=True, watermarks_ok=True, facts_consistent=True)
     return ImageQC(**{**values, **kw})
 
@@ -72,12 +72,12 @@ def test_catalogs_have_identical_keys_and_format_parameters():
 def test_all_editorial_prompts_and_knowledge_are_locale_specific(code):
     root = Path(prompts.__file__).parent
     names = ['extract_core', 'evaluate', 'rewrite', 'vision_analyze', 'image_enhance',
-             'image_localize', 'image_regenerate', 'image_qc', 'language_check']
+             'image_localize', 'image_regenerate', 'image_qc', 'language_check', 'image_execute', 'verified_facts', 'verify_facts']
     values = {key: 'test' for key in (
         'market', 'language_name', 'strings', 'text', 'triage', 'urls', 'image_notes',
         'source_info', 'max_chars', 'max_hashtags', 'max_emojis', 'style', 'banned_phrases',
         'hooks', 'angle', 'audience', 'key_facts', 'background_points', 'risks', 'feedback',
-        'size', 'post', 'brief', 'facts', 'mode', 'mode_rules', 'reference_text', 'images_note')}
+        'size', 'post', 'brief', 'facts', 'mode', 'mode_rules', 'reference_text', 'images_note', 'density', 'density_rules', 'target_locale', 'layout', 'action', 'action_rules', 'options', 'sources', 'packet')}
     for name in names:
         assert (root / code / f'{name}.md').exists()
         rendered = prompts.render(name, code, **values)
@@ -199,12 +199,13 @@ async def test_third_party_overlay_or_news_yields_original_verified_bundle(app, 
     app.hub.cpa.returns.update(images_generate=png_bytes(), chat_json=good_qc(rendered_text='12'))
     rewrite = RewriteResult(post=POST[code], hook='hook')
     [output] = await Pipeline(app)._process_images('t1', env(code, forwards=[ForwardOrigin(chat_id=-10099)]),
-        [image], {0: analysis}, rewrite, Evaluation(suitable=True, value_score=.8), app.i18n.get(code), app.config.current)
-    assert output.decision is ImageDecision.RECREATE and output.output and output.ai_generated
+        [image], {0: analysis}, rewrite, Evaluation(suitable=True, value_score=.8), app.i18n.get(code), app.config.current,
+        verified_facts=VerifiedFacts(facts=[VerifiedFact(text=analysis.extracted_text, evidence=analysis.extracted_text, source_idx=0)]))
+    assert output.decision is (ImageDecision.INFO_CARD if kind == 'photo_real_event' else ImageDecision.RECREATE) and output.output and output.ai_generated
     assert not app.hub.cpa.named('images_edit')
     generation = app.hub.cpa.named('images_generate')[0][0][1]
     assert 'Acme' in generation and '2026-10-05' in generation
-    assert ('简体中文' in generation and '非纪实' in generation) if code == 'zh-CN' else 'news photograph' in generation
+    assert ('简体中文' in generation and '非纪实' in generation) if code == 'zh-CN' else 'non-documentary' in generation
     qc_messages = app.hub.cpa.named('chat_json')[0][0][1]
     assert len([p for p in qc_messages[-1]['content'] if p['type'] == 'image_url']) == 2
     assert not wrong_language(output.reason, code)
@@ -222,7 +223,8 @@ async def test_localization_uses_edit_only_with_confirmed_rights(app, code):
         app.config.current.pipeline.direct_uploads_owned = owned
         [result] = await pipeline._process_images('t1', env(code), [image], {0: analysis},
             RewriteResult(post=POST[code], hook='hook'), Evaluation(suitable=True, value_score=.8),
-            app.i18n.get(code), app.config.current)
+            app.i18n.get(code), app.config.current,
+            verified_facts=VerifiedFacts(facts=[VerifiedFact(text=analysis.extracted_text, evidence=analysis.extracted_text, source_idx=0)]))
         assert result.decision is ImageDecision.LOCALIZE and result.output
     assert len(app.hub.cpa.named('images_edit')) == len(app.hub.cpa.named('images_generate')) == 1
 
@@ -255,7 +257,7 @@ async def test_telegram_delivers_all_images_draft_buttons_and_localized_reasons(
     texts = [button.text for row in kwargs['buttons'] for button in row]
     assert t(code, 'btn_regenerate') in texts and t(code, 'btn_approve_reviewed') in texts
     if code == 'zh-CN':
-        assert '需要审核' in info[1] and '重建' in info[1]
+        assert '需要审核' in info[1] and '重绘' in info[1]
         assert not any(word in info[1] for word in ('review', 'recreate', 'Draft', 'QC'))
 
 
@@ -345,6 +347,10 @@ async def test_full_pipeline_clean_jev_localized_draft_image_qc_and_storage(app,
                                  image_type='infographic', has_channel_overlay=True, relevance=.9,
                                  extracted_text='12 devices', source_facts=['支持 12 台设备。'] if code == 'zh-CN'
                                  else ['Supports 12 devices.'])
+        if schema is VerifiedFacts:
+            return VerifiedFacts(facts=[VerifiedFact(text=SOURCE if code == 'en-US' else '新功能支持 12 台设备。', evidence=SOURCE)])
+        if schema is FactVerification:
+            return FactVerification(passed=True)
         if schema is Evaluation:
             return Evaluation(suitable=True, value_score=.8, reason='具有实用价值。' if code == 'zh-CN'
                               else 'Useful compatibility facts.')
@@ -437,7 +443,8 @@ async def test_every_image_edit_output_requires_qc_before_final(app, code):
     app.hub.cpa.returns.update(images_edit=png_bytes(), chat_json=good_qc(people_consistent=False))
     [result] = await Pipeline(app)._process_images('t1', env(code), [image], {0:analysis},
         RewriteResult(post=POST[code], hook='hook'), Evaluation(suitable=True, value_score=.8),
-        app.i18n.get(code), app.config.current)
+        app.i18n.get(code), app.config.current,
+        verified_facts=VerifiedFacts(facts=[VerifiedFact(text=SOURCE, evidence=SOURCE)]))
     assert result.decision is ImageDecision.REVIEW and result.output is None
     assert result.review_blob is not None
 

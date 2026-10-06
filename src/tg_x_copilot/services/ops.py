@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from ..logging_setup import mask
 from ..i18n import label
 from ..models import TaskStatus
+from ..image_settings import ImagePreferences
 
 if TYPE_CHECKING:
     from ..app_context import AppContext
@@ -190,6 +191,9 @@ class Ops:
         if TaskStatus(task["status"]) not in allowed:
             return False, self.t("cannot_regenerate", status=label(self.app.config.current.default_locale, task["status"]))
         await self.app.storage.release_task(task_id)  # media is re-fetched from Telegram
+        if hasattr(self.app, "image_preferences") and task.get("tg_user_id") is not None:
+            prefs = await self.app.image_preferences.get(task["tg_user_id"])
+            await self.app.repo.set_task_image_preferences(task_id, prefs)
         await self.app.repo.set_task_locale(task_id, self.app.config.current.default_locale,
                                             self.app.config.current.market)
         await self.app.repo.set_status(task_id, TaskStatus.RECEIVED, stage="queued")
@@ -197,3 +201,19 @@ class Ops:
         if not await self.app.workers.enqueue(task_id, wait=False):
             return True, self.t("ops_busy")
         return True, self.t("ops_queued")
+
+    async def rerun_images(self, task_id: str, user_id: int,
+                           preferences: ImagePreferences) -> tuple[bool, str]:
+        task = await self.app.repo.get_task(task_id)
+        if not task:
+            return False, self.t("not_found")
+        if task.get("tg_user_id") != user_id:
+            return False, self.t("image_tools_owner")
+        if task["status"] not in (TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value) or not task.get("draft_text"):
+            return False, self.t("image_tools_not_ready")
+        if not await self.app.repo.queue_image_rerun(task_id, user_id, preferences):
+            return False, self.t("image_tools_not_ready")
+        await self.app.repo.add_event(task_id, "images", "queued image-only job",
+                                      data=preferences.model_dump(mode="json"))
+        await self.app.workers.enqueue(task_id, wait=False)  # sweeper covers a full queue
+        return True, self.t("image_tools_queued")

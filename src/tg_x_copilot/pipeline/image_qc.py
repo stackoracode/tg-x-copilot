@@ -26,16 +26,20 @@ _CHECKS = (
     ("dates", "dates_consistent"),
     ("names", "names_consistent"),
     ("brands", "brands_consistent"),
+    ("identifiers", "identifiers_consistent"),
+    ("readability", "readability_ok"),
+    ("density", "density_consistent"),
     ("people", "people_consistent"),
     ("watermarks", "watermarks_ok"),
     ("facts", "facts_consistent"),
 )
 
 
-def qc_verdict(qc: ImageQC, *, allowed_texts: list[str], locale: str = "en-US") -> tuple[bool, str]:
+def qc_verdict(qc: ImageQC, *, allowed_texts: list[str], locale: str = "en-US",
+               target_locale: str | None = None) -> tuple[bool, str]:
     """Pure decision: (passed, human-readable reason)."""
     failed = [label for label, attr in _CHECKS if not getattr(qc, attr)]
-    if wrong_language(qc.rendered_text, locale) and "language" not in failed:
+    if wrong_language(qc.rendered_text, target_locale or locale) and "language" not in failed:
         failed.append("language")
     allowed: set[str] = set()
     for text in allowed_texts:
@@ -55,12 +59,13 @@ def qc_verdict(qc: ImageQC, *, allowed_texts: list[str], locale: str = "en-US") 
 
 
 def build_messages(mode: QCMode, *, locale: str, market: str, language_name: str, facts: str,
-                   reference_text: str, candidate_url: str, reference_url: str | None
+                   reference_text: str, candidate_url: str, reference_url: str | None, density: str = "medium"
                    ) -> list[dict[str, Any]]:
     rules = prompts.render_json("image_qc_modes", locale, language_name=language_name)[mode]
     note = t(locale, "qc_images_pair" if reference_url else "qc_candidate")
+    density_rule = prompts.render_json("image_actions", locale)["densities"][density]
     p = prompts.render("image_qc", locale, market=market, language_name=language_name,
-                       mode=mode, mode_rules=rules, facts=facts or t(locale, "none"),
+                       mode=mode, mode_rules=rules, density=density, density_rules=density_rule, facts=facts or t(locale, "none"),
                        reference_text=reference_text or t(locale, "none"), images_note=note)
     content: list[dict[str, Any]] = [{"type": "text", "text": p.user}]
     if reference_url:

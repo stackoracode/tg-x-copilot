@@ -19,7 +19,7 @@ from tg_x_copilot.db import pool as db_pool
 from tg_x_copilot.db.repo import Repository
 from tg_x_copilot.models import (
     Evaluation, ImageAnalysis, ImageDecision, ImageQC, InputEnvelope, MediaKind, RewriteResult,
-    SourceMedia, TaskStatus,
+    SourceMedia, TaskStatus, VerifiedFact, VerifiedFacts,
 )
 from tg_x_copilot.pipeline.image_qc import qc_verdict
 from tg_x_copilot.pipeline.limits import Limits
@@ -120,7 +120,7 @@ async def test_text_draft_is_sent_even_if_r2_fetch_fails(app):
 
 def qc(**kw: Any) -> ImageQC:
     base = dict(passed=True, text_consistent=True, numbers_consistent=True,
-                dates_consistent=True, names_consistent=True, brands_consistent=True, people_consistent=True,
+                dates_consistent=True, names_consistent=True, brands_consistent=True, identifiers_consistent=True, readability_ok=True, density_consistent=True, people_consistent=True,
                 watermarks_ok=True, facts_consistent=True, language_consistent=True, rendered_text="", issues=[])
     base.update(kw)
     return ImageQC(**base)
@@ -156,7 +156,8 @@ def _image_case(app):
 async def _run_images(app, settings, analysis, img, rewrite, evaluation):
     env = envelope(forwards=[{"chat_id": -100999}])  # third-party -> regenerate
     return await Pipeline(app)._process_images(
-        "t1", env, [img], {0: analysis}, rewrite, evaluation, app.i18n.get("en-US"), settings)
+        "t1", env, [img], {0: analysis}, rewrite, evaluation, app.i18n.get("en-US"), settings,
+        verified_facts=VerifiedFacts(facts=[VerifiedFact(text=TEXT, evidence=TEXT)]))
 
 
 async def test_image2_output_failing_qc_is_review(app, settings):

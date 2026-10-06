@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from telethon import Button, TelegramClient, events
 
 from ..i18n import label
+from .image_tools import ImageTools
 from ..logging_setup import ctx
 
 if TYPE_CHECKING:
@@ -22,7 +23,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 _MAX_MSG = 4000
-_DECISION_ICON = {"keep": "✅", "enhance": "✨", "regenerate": "🎨", "localize": "🌐", "recreate": "🎨", "review": "👀"}
+_DECISION_ICON = {"generate": "🎨", "info_card": "📊", "clean_recreate": "🧹", "omit": "⏭", "text_only": "📄", "keep": "✅", "enhance": "✨", "regenerate": "🎨", "localize": "🌐", "recreate": "🎨", "review": "👀"}
 
 
 def esc(value: Any) -> str:
@@ -57,7 +58,7 @@ class TelegramBot:
         log.info("telegram bot connected", extra=ctx(username=getattr(me, "username", None)))
         c = self.client
         c.add_event_handler(self._on_command, events.NewMessage(
-            incoming=True, pattern=r"^/(start|help|menu|settings|recent)\b"))
+            incoming=True, pattern=r"^/(start|help|menu|settings|recent|images)\b"))
         c.add_event_handler(self._on_message, events.NewMessage(
             incoming=True, func=lambda e: e.is_private and not (e.raw_text or "").startswith("/")
             and e.message.grouped_id is None))
@@ -163,7 +164,10 @@ class TelegramBot:
                                          f"t:a:{task_id}".encode()))
         buttons += [Button.inline(tr("btn_regenerate"), f"t:g:{task_id}".encode()),
                     Button.inline(tr("btn_reject"), f"t:r:{task_id}".encode())]
-        await self.notify(chat_id, "\n".join(lines), buttons=[buttons])
+        if meta.get("image_locale") and meta["image_locale"] != locale:
+            lines.append(tr("image_target_locale", locale=meta["image_locale"]))
+        image_button = Button.inline(tr("btn_image_tools"), f"it:{task_id}:v:main".encode())
+        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, [image_button]])
         if task.get("draft_text"):
             await self.client.send_message(chat_id, task["draft_text"], parse_mode=None,
                                            link_preview=False)
@@ -177,6 +181,7 @@ class TelegramBot:
         return [
             [Button.inline(self.t("btn_refresh_models"), b"m:refresh"),
              Button.inline(self.t("btn_test_connections"), b"m:health")],
+            [Button.inline(self.t("btn_image_tools"), b"it:-:v:main")],
             [Button.inline(self.t("btn_recent"), b"m:recent"),
              Button.inline(self.t("btn_language"), b"m:language")],
         ]
@@ -192,6 +197,8 @@ class TelegramBot:
             await event.respond(esc(self.t("welcome")), buttons=self._menu())
         elif cmd in ("menu", "settings"):
             await event.respond(self.t("menu_title"), buttons=self._menu())
+        elif cmd == "images":
+            await ImageTools(self).open(event)
         elif cmd == "recent":
             await event.respond(await self._recent_text())
 
@@ -222,11 +229,16 @@ class TelegramBot:
         data = event.data.decode(errors="ignore")
         ops = self.app.ops
         try:
-            if data == "m:language":
+            if data.startswith("it:"):
+                await ImageTools(self).handle(event, data)
+            elif data == "m:menu":
+                await event.answer()
+                await event.edit(self.t("menu_title"), buttons=self._menu())
+            elif data == "m:language":
                 await event.answer()
                 await event.respond(self.t("language_settings"), buttons=[[
-                    Button.inline("English (US)", b"m:locale:en-US"),
-                    Button.inline("简体中文", b"m:locale:zh-CN")]])
+                    Button.inline(("☑ " if self.app.config.current.default_locale == "en-US" else "☐ ") + "English (US)", b"m:locale:en-US"),
+                    Button.inline(("☑ " if self.app.config.current.default_locale == "zh-CN" else "☐ ") + "简体中文", b"m:locale:zh-CN")]])
             elif data.startswith("m:locale:"):
                 locale = data.removeprefix("m:locale:")
                 if locale not in self.app.i18n.codes:

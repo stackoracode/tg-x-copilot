@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 from ..models import InputEnvelope, TaskStatus
+from ..image_settings import ImagePreferences
 from .pool import Database
 
 _TASK_JSON = ("envelope", "jev_result", "evaluation", "draft_meta")
@@ -52,7 +53,7 @@ class Repository:
         """Regeneration adopts current language; original source content stays intact."""
         await self.db.execute(
             "UPDATE tasks SET locale=%s, market=%s, envelope=JSON_SET(envelope,"
-            " '$.locale', %s, '$.market', %s) WHERE id=%s",
+            " '$.locale', %s, '$.market', %s, '$.processing_mode', 'full') WHERE id=%s",
             (locale, market, locale, market, task_id))
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
@@ -244,7 +245,7 @@ class Repository:
     # ------------------------------------------------------------------ settings
 
     async def get_settings(self) -> dict[str, Any]:
-        rows = await self.db.fetchall("SELECT k, v FROM settings")
+        rows = await self.db.fetchall("SELECT k, v FROM settings WHERE k NOT LIKE 'image_preferences:%'")
         return {r["k"]: json.loads(r["v"]) for r in rows}
 
     async def set_settings(self, values: dict[str, Any]) -> None:
@@ -296,3 +297,37 @@ class Repository:
             " ORDER BY provider, model_id"
         )
         return [_decode(r, ("capabilities",)) for r in rows]  # type: ignore[misc]
+
+    async def get_image_preferences(self, user_id: int) -> dict[str, Any] | None:
+        row = await self.db.fetchone("SELECT v FROM settings WHERE k=%s",
+                                     (f"image_preferences:{int(user_id)}",))
+        return _decode(row, ("v",))["v"] if row else None
+
+    async def save_image_preferences(self, user_id: int, preferences: dict[str, Any]) -> None:
+        # Validate an explicit non-secret schema; arbitrary config/credentials cannot enter.
+        validated = ImagePreferences.model_validate(preferences)
+        await self.db.execute("INSERT INTO settings (k,v) VALUES (%s,%s)"
+                              " ON DUPLICATE KEY UPDATE v=VALUES(v)",
+                              (f"image_preferences:{int(user_id)}", _dumps(validated)))
+
+    async def queue_image_rerun(self, task_id: str, user_id: int,
+                              preferences: ImagePreferences) -> bool:
+        n = await self.db.execute(
+            "UPDATE tasks SET status=%s, stage='images_queued', error=NULL,"
+            " envelope=JSON_SET(envelope, '$.processing_mode', 'images_only',"
+            " '$.image_action', %s, '$.image_options', JSON_EXTRACT(%s, '$'))"
+            " WHERE id=%s AND tg_user_id=%s AND status IN (%s,%s) AND draft_text IS NOT NULL",
+            (TaskStatus.RECEIVED.value, preferences.image_action.value if preferences.image_action
+             else None, _dumps(preferences.image_options), task_id, user_id,
+             TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value))
+        return n == 1
+
+    async def delete_media_rows(self, task_id: str) -> None:
+        # Only after AssetStore.release_task has detached/released old references.
+        await self.db.execute("DELETE FROM task_media WHERE task_id=%s", (task_id,))
+
+    async def set_task_image_preferences(self, task_id: str, prefs: ImagePreferences) -> None:
+        await self.db.execute(
+            "UPDATE tasks SET envelope=JSON_SET(envelope, '$.image_action', %s,"
+            " '$.image_options', JSON_EXTRACT(%s, '$')) WHERE id=%s",
+            (prefs.image_action.value if prefs.image_action else None, _dumps(prefs.image_options), task_id))

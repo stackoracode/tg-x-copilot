@@ -1,0 +1,29 @@
+{
+  "actions": {
+    "keep": "Keep the owned/authorized source unchanged.",
+    "enhance": "Quality-only pass. Never change text, facts, people, objects, logos or documentary meaning.",
+    "localize": "Translate explanatory text faithfully into the target language. Preserve factual relationships and identifiers. For authorized edits preserve people and documentary content; for unlicensed information graphics create a new original redraw.",
+    "recreate": "Create a new original informational visual from verified facts. Never reconstruct real documentary scenes or real people as photographs.",
+    "clean_recreate": "Create a NEW original visual without channel promotion or attribution noise. Do not erase or patch watermarks on the source image.",
+    "info_card": "Create a clearly non-documentary original information card with an honest factual headline/hook and visual hierarchy.",
+    "generate": "Create an original X illustration/information card from the verified packet and final editorial angle, even without source images.",
+    "omit": "Do not output an image.",
+    "text_only": "Deliver the existing text draft without images."
+  },
+  "options": {
+    "keep_brands": "Keep relevant brand names verbatim.",
+    "keep_identifiers": "Preserve relevant numbers, dates, products/models, protocols and technical identifiers verbatim.",
+    "translate_text": "Translate explanatory image text to the selected locale, preserving meaning.",
+    "similar_layout": "Prefer similar informational hierarchy; layout similarity is a preference, never a factual verification criterion for original redraws.",
+    "redesign": "Allow a completely new original layout and visual hierarchy.",
+    "remove_overlays": "Exclude channel/promotion overlays from NEW creations. Never erase watermarks on a source edit.",
+    "factual_priority": "Prioritize factual accuracy over decorative detail.",
+    "visual_priority": "Prioritize visual clarity, quality and mobile readability; never invent facts for aesthetics.",
+    "minimal_changes": "Minimize changes consistent with the action, target language and mandatory safety rules."
+  },
+  "densities": {
+    "low": "One core idea, an honest short hook/headline and minimal text. No more than one supporting label.",
+    "medium": "A short factual headline/hook plus 2–4 high-value points if supported; fewer if the packet has fewer facts.",
+    "high": "More technical detail is allowed, but use short labels and grouped cards. Keep readable font sizes on a mobile X feed. Never dense paragraphs."
+  }
+}

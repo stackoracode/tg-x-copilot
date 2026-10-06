@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from .image_settings import ImageAction, ImageOptions
+
 
 class TaskStatus(StrEnum):
     RECEIVED = "received"
@@ -28,6 +30,7 @@ class MediaKind(StrEnum):
     IMAGE_DOCUMENT = "image_document"
     VIDEO = "video"
     OTHER = "other"
+    GENERATED = "generated"
 
 
 class ImageDecision(StrEnum):
@@ -36,6 +39,11 @@ class ImageDecision(StrEnum):
     REGENERATE = "regenerate"  # backward-compatible stored decision
     LOCALIZE = "localize"
     RECREATE = "recreate"
+    CLEAN_RECREATE = "clean_recreate"
+    INFO_CARD = "info_card"
+    GENERATE = "generate"
+    OMIT = "omit"
+    TEXT_ONLY = "text_only"
     REVIEW = "review"
 
 
@@ -72,6 +80,9 @@ class InputEnvelope(BaseModel):
     urls: list[str] = Field(default_factory=list)
     media: list[SourceMedia] = Field(default_factory=list)
     forwards: list[ForwardOrigin] = Field(default_factory=list)
+    image_action: ImageAction | None = None
+    image_options: ImageOptions = Field(default_factory=ImageOptions)
+    processing_mode: Literal["full", "images_only"] = "full"
     locale: str = "en-US"
     market: str = "US"
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -114,9 +125,11 @@ class TriageResult(BaseModel):
 
 class ImageAnalysis(BaseModel):
     description: str
+    layout_description: str = ""  # information hierarchy, never factual evidence
     image_type: Literal[
         "photo_real_event", "photo_generic", "chart", "infographic",
         "illustration", "screenshot", "meme", "other",
+        "ui_screenshot", "mixed_layout", "generic_visual", "brand_asset", "text_input",
     ] = "other"
     depicts_real_people: bool = False
     has_third_party_watermark: bool = False
@@ -185,6 +198,9 @@ class ImageQC(BaseModel):
     people_consistent: bool  # no people added/removed/altered; no real-person likeness
     watermarks_ok: bool  # no watermark/logo added, and none removed
     facts_consistent: bool  # nothing contradicts the source facts
+    identifiers_consistent: bool = False
+    readability_ok: bool = False
+    density_consistent: bool = False
     language_consistent: bool = False  # fail closed when upstream omits this check
     rendered_text: str = ""  # all text visible in the candidate, verbatim
     issues: list[str] = Field(default_factory=list)
@@ -192,8 +208,26 @@ class ImageQC(BaseModel):
 
 class MediaResult(BaseModel):
     idx: int
-    decision: ImageDecision
+    decision: ImageDecision | ImageAction
     reason: str
     asset_key: str | None = None  # R2 key, only when something was persisted
     asset_kind: Literal["final", "review"] | None = None
     ai_generated: bool = False
+
+
+class VerifiedFact(BaseModel):
+    text: str
+    evidence: str  # exact span in cleaned core content or source OCR
+    source_idx: int | None = None  # None = cleaned core; otherwise source image index
+
+
+class VerifiedFacts(BaseModel):
+    facts: list[VerifiedFact] = Field(default_factory=list)
+
+    @property
+    def text(self) -> str:
+        return "\n".join(f.text for f in self.facts)
+
+
+class FactVerification(BaseModel):
+    passed: bool

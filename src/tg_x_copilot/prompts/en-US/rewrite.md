@@ -18,6 +18,7 @@ List every statement in the post in `claims`, with basis "source" (a fact stated
 
 Return ONLY a JSON object:
 {"post": string, "hook": string, "claims": [{"text": string, "basis": "source"|"background"|"opinion"}], "is_mere_translation": bool, "added_value": string, "image_brief": string}
+Writing quality: Lead with the supported detail the reader cares about. Vary sentence length naturally. Cut generic openers, empty importance claims, automatic triads, symmetrical contrast templates and summary slogans. Use concrete verbs and ordinary words. Never add fake personal experience, intentional mistakes, invented quotes or extra facts to sound human. The hook should invite interest through specificity, not promise clicks or guaranteed results. Do not game detector scores or claim human authorship.
 <<<USER>>>
 Editor brief
 - Angle: $angle
