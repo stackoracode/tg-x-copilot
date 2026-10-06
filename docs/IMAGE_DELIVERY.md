@@ -21,9 +21,12 @@ marks are protected. Legacy ambiguous watermark classifications fail closed for 
 
 In Image Tools, enable **Remove channel/promotion overlays** together with **Minimal changes**,
 or select ENHANCE with promotion removal. Both flags remain compatible and remembered using
-the existing per-user preference service. Confirm ownership/authorization using the existing
-`pipeline.owned_source_ids` or `pipeline.direct_uploads_owned` configuration; an option toggle
-alone never grants editing rights. Forwarded origins must be authorized per image.
+the existing per-user preference service. For a rights-blocked image, the review card now offers
+**I confirm I have editing rights for this image** (Simplified Chinese: **我确认拥有此图片的编辑权限**).
+Existing review cards can reach the same button through Image Tools, without an LLM call.
+The existing `pipeline.owned_source_ids` and `pipeline.direct_uploads_owned` configuration remains
+supported, but the confirmation button never changes these global settings. An option toggle
+alone never grants editing rights; forwarded origins remain checked per image.
 
 The selected flags explicitly request removing only identified channel-promotion rectangles.
 `image_options.promotion_targets` can restrict these further to `source-index.region-id`;
@@ -64,7 +67,7 @@ This uses the official [Telethon send_file documentation](https://docs.telethon.
 Telegram may apply its own photo compression; exact pixel preservation describes the stored
 final asset before Telegram's photo transport.
 
-The review card and `draft_meta.delivery` distinguish **IMAGE_POLICY**, **IMAGE2**, **QC**,
+The review card and `draft_meta.delivery` distinguish **IMAGE_POLICY**, **IMAGE2**, **IMAGE_QC**,
 **R2_UPLOAD**, **R2_FETCH**, and **TELEGRAM_SEND** failures, per image. A transport failure marks
 a pending draft NEEDS_REVIEW; retrying delivery can clear the transport failure without
 regenerating the draft. Processing diagnostics and terminal tasks remain unchanged.
@@ -77,3 +80,38 @@ with in-memory R2/database fakes and a fake Telethon photo receipt. Both locales
 images, permitted minimal cleanup, protected marks, Image2/QC failures, upload/fetch errors,
 invalid R2 bytes, Telegram errors/document responses, stale pointers, retries, ordering and
 callback preference persistence. These tests make no production writes or upstream paid calls.
+
+
+## Explicit per-image confirmation and durable retry
+
+The callback is `ia:<task_id>:<image_idx>` (under Telegram's 64-byte limit). Telegram's allowed-user
+check runs first. Ops additionally checks the task owner, chat, draft status, image index, and the
+specific IMAGE_POLICY rights-blocked result. Confirmation and queueing are one conditional SQL
+update, guarding the current media hash/reason/status; stale or duplicate callbacks cannot queue
+a second job. A full in-memory queue is covered by the existing database sweeper.
+
+Authorization is stored in MySQL **tasks.envelope.image_edit_authorizations[image_idx]**, with
+`task_id`, `image_idx`, `source_sha256`, `user_id` and `confirmed_at`. It is not stored in global
+settings or remembered image preferences. Its hash must match the actual newly downloaded source,
+and it is consulted only for requested scoped promotion cleanup. It never permits removal of
+source/copyright/author marks or bypasses sensitive-content checks, rectangle guards or Vision QC.
+Changing the task, image index, actor or source bytes invalidates this authorization.
+
+The same atomic update sets `processing_mode=images_only` and `image_retry_indices=[image_idx]`.
+The worker downloads/analyzes/processes/persists only this image, retaining its original index.
+No intake cleaning, Jev, text evaluation, rewrite, or fact-packet LLM runs for this retry. Vision
+analysis, its language check, Image2 edit and image QC remain active. Source analysis is refreshed;
+failed fresh analysis is never rescued by old cached mark regions. The original X draft remains
+byte-identical, and other images, their R2 assets and delivery receipts remain untouched.
+
+AssetStore.release_task accepts an optional index filter, so replacement cannot free unrelated
+assets. Draft delivery receives the same filter and sends only the selected final photo, followed
+by the full review card and original X draft. Failures include localized connection/timeout/invalid
+image/HTTP status categories without exposing raw upstream payloads, source data or credentials.
+For database compatibility the historical stored QC enum remains `QC`; review cards display
+`IMAGE_QC` and new image verification events use `IMAGE_QC`.
+
+`tests/test_image_authorization.py` covers the complete callback → durable scoped worker →
+Image2 → QC → final R2 asset → real photo-send API boundary in both locales, with isolated
+transports. It also checks ownership, stale/duplicate callbacks, hash changes, protected target
+rejection, explicit rectangle selection, other-image preservation, and every failure stage.

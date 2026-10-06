@@ -244,7 +244,8 @@ async def test_failures_have_specific_review_stage_and_still_deliver_draft(
     assert receipt["failure_stage"] == stage and not receipt["sent"]
     assert app.repo.task["status"] == "needs_review"
     card = b.client.named("send_message")[-2][0][1]
-    assert f"[{stage}]" in card and "❌" in card
+    display_stage = "IMAGE_QC" if stage == "QC" else stage
+    assert f"[{display_stage}]" in card and "❌" in card
     assert b.client.named("send_message")[-1][0][1] == app.repo.task["draft_text"]
     if stage not in ("TELEGRAM_SEND",):
         assert not b.client.named("send_file")
