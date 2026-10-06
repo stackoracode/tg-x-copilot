@@ -3,7 +3,7 @@
 ## Goals and non-goals
 
 **Goals:** help a human operator turn forwarded Telegram content into original, useful
-English X posts for the US market. The system triages the content cheaply, adds context,
+English or Simplified Chinese X posts for the configured market. The system triages the content cheaply, adds context,
 writes a strong but honest hook, prepares compliant images, and leaves the final decision to
 the operator. It also stays inside the Cloudflare R2 free tier.
 
@@ -71,9 +71,15 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
    - Only the worker that gets `affected_rows == 1` processes the task. This holds across
      workers and across processes.
 4. **Worker** (`pipeline/processor.py`):
+   0. **Clean** (`pipeline/cleaning.py`). A minimal deterministic prefilter removes obvious
+      CTAs/contact lines, attribution, tracking and repeated tags. A main-model extraction
+      cleans each message independently, then canonicalizes/deduplicates the bundle. Hidden
+      Telegram link entities are included with tracking removed. Extraction errors or invented
+      numbers fall back to deterministic cleaning with a localized warning. Original envelopes
+      remain unchanged for audit/retries; attribution never reaches Jev or editorial prompts.
    1. **Triage with Jev** (`pipeline/triage.py`). This is text only, and nothing has been
       downloaded yet.
-      - The state is a JSON object holding the post text, source, links, an attachment
+      - The state is a JSON object holding the clean core text, source links, an attachment
         *description*, and the target audience.
       - The typed questions live in `prompts/<locale>/jev_triage.json`:
         `value` (score, 4 levels), `content_type` (choice), and `promotional`, `risky`,
@@ -95,28 +101,28 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
         - the call exceeds `JEV__BUDGET_SECONDS`, which includes retries.
 
         A Jev outage never fails a task.
-      - Skipped tasks cost one Jev call and **store nothing**.
+      - Skipped tasks cost content-extraction calls and at most one Jev call; **no media is stored**.
    2. **Media.** Images are downloaded from Telegram **into memory**. Downloads are skipped
       if Jev judged the media not useful. A failed download marks the affected images REVIEW
       with the reason, and the text pipeline continues. Each image is checked with Pillow and its
       `source_sha256` is recorded. If the same file appeared in another task, the draft gets a
       warning.
-   3. **Vision**, one call per image in parallel. One failing image goes to review; the task
+   3. **Vision**, one analysis per image in parallel, followed by typed narrative-language verification. One failing image goes to review; the task
       continues.
    4. **Evaluate.** The main LLM acts as an editor: key facts from the source, allowed
       background, risks, the angle, and whether the content is suitable. If it is not
       suitable, the task is skipped and nothing is stored.
-   5. **Rewrite.** The main LLM writes JSON, then deterministic guards check it.
+   5. **Rewrite.** The main LLM writes JSON, then deterministic guards and a separate typed language check verify it. Wrong-language candidates are retried and never kept as publishable drafts.
       - Blocking *problems* (fabricated numbers, clickbait, too close to the source, and so
         on) are retried with the problems as feedback.
       - *Review items* do not trigger retries. These are `background` claims the LLM added,
         and numbers backed only by LLM-extracted facts. They force `needs_review`.
-   6. **Images.** The policy decides keep, enhance, regenerate, or review. Outputs are
+   6. **Images.** The policy decides keep, enhance, localize, recreate, or review. Outputs are
       produced and optimized **in memory**.
       - Every image-model output (enhance, localize, regenerate) must then pass **visual
         QC** (`pipeline/image_qc.py`, prompt `image_qc.md`).
-      - The vision model compares the candidate with the reference image (enhance and
-        localize) or with the allowed facts (regenerate). It checks text, numbers, dates,
+      - The vision model compares the candidate with the original source image and source facts, including for recreation. The generator
+        never receives a third-party source image as an editing/reference input. It checks language, text, numbers, dates,
         product and brand names, people, watermarks and logos, and facts.
       - A deterministic check also requires every number rendered in the image to appear in
         the reference text.
@@ -138,7 +144,7 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
      were already delivered to Telegram with the draft.
    - **Reject:** the task becomes `rejected` and all its assets are released.
    - **Regenerate:** all assets are released and the task is re-queued. Media is fetched
-     again from Telegram.
+     again from Telegram. Regeneration adopts the current configured locale and market.
 
 ### Task state machine
 
@@ -201,7 +207,7 @@ any non-final → rejected
 | Semaphore | Guards | Default |
 |---|---|---|
 | `jev` | TypeSafe System One calls | 4 |
-| `text` | evaluation and rewrite calls | 2 |
+| `text` | extraction, evaluation, rewrite and narrative-language verification | 2 |
 | `vision` | per-image analysis | 2 |
 | `image` | image edit and generation | 1 |
 | `db` | concurrent PyMySQL threads (`asyncio.to_thread`) | 5 |
@@ -260,11 +266,13 @@ at MVP volume. A thread-confined pool can replace it later behind the same async
   | Situation | Decision |
   |---|---|
   | Sensitive content | review |
-  | Third-party watermark | review (never removed) |
-  | Third-party real-event photo or real people | review (re-creating it would fabricate a news image) |
-  | Other third-party visuals | regenerate as an original, without using the source as a reference |
+  | Channel overlay/watermark | recreate a new original information card; no watermark-removal editing |
+  | Unlicensed real-event photo or real people | recreate as a clearly non-documentary information card from source facts; review if no facts |
+  | Third-party screenshots/infographics in the wrong language | localize through an original redraw from extracted facts |
+  | Other third-party visuals | recreate an original visual from facts; source is used for QC only |
   | Own visual with text in another language | localize |
-  | Own low-quality visual | enhance |
+  | Own low-quality informational visual | recreate |
+  | Authorized low-quality photo | enhance without changing documentary content |
   | Own good media | keep |
 
 ## i18n design
@@ -274,7 +282,11 @@ at MVP volume. A thread-confined pool can replace it later behind the same async
 - Prompts live in `prompts/<code>/`. That includes `jev_triage.json`, so Jev's questions can
   be localized too. Missing files fall back to en-US.
 - The `x_rules`, `hooks`, and `locales` tables are keyed by locale and market, and each task
-  carries its own locale and market.
+  carries its own locale and market. Both supported locales ship complete UI/prompt packs.
+  `knowledge.json` supplies localized rules/hooks when no matching database entries exist.
+  Telegram and admin language controls share runtime config; regeneration adopts the current
+  language. New envelope fields (per-message text/links and per-media rights origin) are optional
+  for old tasks; unknown source rights fail closed. No schema migration is required.
 - Image prompts always include `language_name`, so text rendered in images follows the
   configured language.
 
@@ -299,7 +311,7 @@ at MVP volume. A thread-confined pool can replace it later behind the same async
 
 - Jev is a native System One client. The old design faked it as an OpenAI chat endpoint that
   silently fell back to CPA; that fallback is gone.
-- Triage now happens before any download, so skipped posts cost one Jev call and no
+- Triage now happens before any download, after content cleaning, so skipped posts cost extraction/triage calls and no media
   bandwidth.
 - The "raw upload at ingest" step is gone. Raw media used to be uploaded to R2 so retries
   could re-read it; retries now re-fetch from Telegram, which still holds the original.

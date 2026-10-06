@@ -1,10 +1,11 @@
 # tg-x-copilot
 
 A copilot that turns content forwarded from Telegram into **original, useful X posts in
-English for the US market**.
+English or Simplified Chinese for the configured market**.
 
 You forward posts to the bot: text, photos, captions, albums, or several posts at once.
 
+0. **Clean the content**: a small deterministic prefilter removes obvious promotion and tracking; an LLM extracts each message's factual core, then combines the results. Forward attribution is audit/rights metadata and never publishing content.
 1. **Jev** ([TypeSafe AI System One](https://docs.typesafe.ai/api)) triages the post with
    typed questions:
    - a value score;
@@ -19,10 +20,10 @@ You forward posts to the bot: text, photos, captions, albums, or several posts a
    in depth and rewrite it as a concise, natural X post. The post has an honest hook and
    practical background. Made-up facts, clickbait, and translate-and-repost are blocked by
    deterministic guards.
-3. **Images** are kept, enhanced, regenerated as original visuals, or flagged for review.
+3. **Images** are kept, enhanced, localized, recreated as original visuals, or flagged for review.
    Third-party watermarks are never removed, and third-party files are never reposted.
    Every output from the image model must pass a **visual QC check** before it is used. QC
-   compares text, numbers, dates, names, people, watermarks, and facts. A failed check sends
+   compares language, text, numbers, dates, names, brands/logos, people, watermarks, and facts. A failed check sends
    the image to review.
 4. You get a **draft** with buttons to approve, regenerate, or reject. You post it to X
    yourself.
@@ -71,7 +72,7 @@ src/tg_x_copilot/
   pipeline/              normalizer, workers, triage, processor, guards, image policy,
                          image QC, media optimization
   services/              client hub, runtime config, asset store (R2 policy), ops
-  prompts/en-US/         LLM prompts (*.md) and Jev question set (jev_triage.json)
+  prompts/<locale>/      LLM prompts, Jev questions, localized rules and hook defaults
   i18n/locales/          locale packs
   web/                   FastAPI admin UI (Jinja2)
 sql/                     schema + en-US seed + DB user
@@ -208,9 +209,13 @@ The admin UI listens on `127.0.0.1:8080`. Open it through an SSH tunnel:
 Media is treated as **third-party** unless its forward source is listed in
 `PIPELINE__OWNED_SOURCE_IDS`, or it is a direct upload and `PIPELINE__DIRECT_UPLOADS_OWNED=true`.
 
-Third-party media is never kept or enhanced. Generic visuals are re-created as original
-illustrations. Real-event photos, images of real people, and anything with a watermark go to
-review.
+Third-party media is never kept or enhanced. Informational visuals are localized/recreated
+from extracted facts. Channel overlays trigger a new original information card, never a
+watermark-removal edit; normal brand/product logos are distinguished from those overlays.
+Unlicensed real-person/news photos become clearly non-documentary information cards when
+facts are available, otherwise review. Rights are confirmed per media item, including
+mixed-origin albums. Every generated/edit output is verified against source facts and the
+original image; failed checks never become final assets.
 
 ## Debugging on a VPS
 
@@ -225,14 +230,29 @@ review.
 - Secrets are masked in all log output. That covers known values, including the Jev, CPA,
   and R2 keys, plus common token patterns.
 
-## Adding a locale (later phases)
+## Language settings
 
-1. Add `i18n/locales/xx-YY.json` and `prompts/xx-YY/` (including `jev_triage.json` if the
-   questions should change).
-2. Seed the `locales`, `x_rules`, and `hooks` rows.
-3. Set `DEFAULT_LOCALE` and `MARKET`.
+Both `en-US` and `zh-CN` are supported. Use **Language settings** from Telegram
+`/menu` or `/settings`, or the language selector in the admin header/settings form.
+Both controls update the same runtime `default_locale` in MySQL. The selected language
+controls messages, buttons, status/review reasons, editorial rules/hooks, drafts and image
+instructions, including recreated infographic text. The market remains independently configurable.
 
-Text in generated images follows the locale's `language_name`.
+Tasks capture their locale on intake so switching during processing cannot mix languages
+within a bundle. Existing drafts retain their language; **Regenerate** adopts the current
+locale/market. Source text, OCR, names/identifiers and technical logs retain their original
+spelling for audit. Brand/product names, technical identifiers, dates and numbers are not
+blindly translated. Chinese informational text must use Simplified Chinese.
+
+Locale packs have complete matching keys; prompts and `knowledge.json` provide localized
+rules and hook defaults without a database migration. Existing locale/market-specific database
+rules and hooks override those defaults. Unsupported locales are rejected by configuration validation.
+A separate typed language check verifies generated editorial/vision narrative, with rewrite retries;
+invalid-language drafts are never delivered. This adds model calls under the existing text semaphore.
+
+The image transport continues to use `models.image_model` and the existing CPA configuration.
+Select the exact Image2.5 model identifier exposed by your provider in the existing model setting;
+this change does not rename provider model IDs or alter production configuration.
 
 ## Reliability behaviour
 
@@ -263,7 +283,7 @@ Text in generated images follows the locale's `language_name`.
 
 - An X API publisher adapter behind Approve
 - Video support (keyframes and review)
-- Per-task locale selection, plus a second market
+- Per-user locale selection, plus additional markets
 - Calibrating Jev thresholds against the operator's approve and reject history
 - A reconciliation job that lists R2 and deletes orphaned objects
 - Prometheus metrics
