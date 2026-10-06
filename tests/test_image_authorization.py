@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import Recorder, png_bytes
+from conftest import Recorder, png_bytes, sent_files
 from test_bilingual import bot, good_qc
 from test_image_delivery import MediaRepo, setup, process, promotion
 from test_image_tools import button_data
@@ -148,7 +148,7 @@ async def test_card_callback_authorizes_only_current_image_and_completes_deliver
     draft = app.repo.task["draft_text"]
     other = copy.deepcopy(app.repo.media[1])
     await b.send_draft(TASK)
-    buttons = b.client.named("send_message")[-2][1]["buttons"]
+    buttons = b.client.named("send_message")[0][1]["buttons"]
     matching = [
         button
         for row in buttons
@@ -176,8 +176,8 @@ async def test_card_callback_authorizes_only_current_image_and_completes_deliver
     final = app.hub.r2.objects[app.repo.media[0]["asset_key"]]
     assert app.repo.media[0]["asset_kind"] == "final"
     assert unchanged_outside(image.blob.data, final, [promotion()])
-    assert [name for name, _, _ in b.client.calls] == ["send_file", "send_message", "send_message"]
-    photo = b.client.named("send_file")[0][0][1]
+    assert [name for name, _, _ in b.client.calls] == ["send_file", "send_message"]
+    photo = sent_files(b.client.named("send_file")[0][0][1])
     assert len(photo) == 1 and photo[0].getvalue() == final
     assert app.repo.task["draft_meta"]["delivery"]["0"]["sent"] is True
     assert app.repo.task["draft_meta"]["delivery"]["1"] == prior_other_receipt

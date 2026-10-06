@@ -12,7 +12,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from conftest import Recorder, png_bytes
+from conftest import Recorder, png_bytes, sent_files
 from tg_x_copilot import prompts
 from tg_x_copilot.bot.telegram import TelegramBot
 from tg_x_copilot.config import JevSettings
@@ -249,9 +249,10 @@ async def test_telegram_delivers_all_images_draft_buttons_and_localized_reasons(
     app.hub.r2.returns['get_object'] = png_bytes()
     b = bot(app)
     await b.send_draft('t1')
-    assert len(b.client.named('send_file')[0][0][1]) == 1
+    assert len(sent_files(b.client.named('send_file')[0][0][1])) == 1
     messages = b.client.named('send_message')
-    assert messages[-1][0][1] == POST[code]
+    assert b.client.named('send_file')[0][1]['caption'] == POST[code]
+    assert len(messages) == 1
     info, kwargs = messages[0]
     assert not wrong_language(info[1], code)
     texts = [button.text for row in kwargs['buttons'] for button in row]
@@ -489,4 +490,4 @@ async def test_telegram_all_final_assets_are_sent_in_batches(app):
     app.hub.r2.returns['get_object'] = png_bytes()
     b = bot(app)
     await b.send_draft('t1')
-    assert [len(args[1]) for args, _ in b.client.named('send_file')] == [10, 1]
+    assert [len(sent_files(args[1])) for args, _ in b.client.named('send_file')] == [10, 1]

@@ -241,7 +241,7 @@ async def test_text_only_generation_uses_packet_angle_locale_and_density(
     await b.send_draft(TASK)
     assert (
         b.client.named("send_file")
-        and b.client.named("send_message")[-1][0][1] == POST[code]
+        and b.client.named("send_file")[0][1]["caption"] == POST[code]
     )
 
 

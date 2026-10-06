@@ -60,8 +60,10 @@ All other image actions continue to use the existing localized facts/density/pro
 5. Draft delivery fetches actual R2 bytes and validates the image, wraps them in named BytesIO
    streams, then calls Telethon `send_file(..., force_document=False)` in batches of up to ten.
    It checks each returned message has `photo`, before reporting success.
-6. Images are sent before the review card and unchanged X draft. Text still arrives when an
-   image fails. A stale final pointer cannot override a REVIEW decision/QC failure.
+6. One image carries the unchanged X draft as its caption; 2–10 images form an album with
+   the draft on its first photo. The review card replies to the content bundle. Oversize captions
+   and unconfirmed caption delivery fall back to an untruncated related text message. Text still
+   arrives when an image fails. A stale final pointer cannot override a REVIEW decision/QC failure.
 
 This uses the official [Telethon send_file documentation](https://docs.telethon.dev/en/stable/modules/client.html#telethon.client.uploads.UploadMethods.send_file).
 Telegram may apply its own photo compression; exact pixel preservation describes the stored
@@ -105,8 +107,8 @@ failed fresh analysis is never rescued by old cached mark regions. The original 
 byte-identical, and other images, their R2 assets and delivery receipts remain untouched.
 
 AssetStore.release_task accepts an optional index filter, so replacement cannot free unrelated
-assets. Draft delivery receives the same filter and sends only the selected final photo, followed
-by the full review card and original X draft. Failures include localized connection/timeout/invalid
+assets. Draft delivery receives the same filter and sends only the selected final photo with the original X draft as its caption, followed
+by a related review-card reply. The draft is not duplicated when caption delivery is confirmed. Failures include localized connection/timeout/invalid
 image/HTTP status categories without exposing raw upstream payloads, source data or credentials.
 For database compatibility the historical stored QC enum remains `QC`; review cards display
 `IMAGE_QC` and new image verification events use `IMAGE_QC`.
@@ -115,3 +117,44 @@ For database compatibility the historical stored QC enum remains `QC`; review ca
 Image2 → QC → final R2 asset → real photo-send API boundary in both locales, with isolated
 transports. It also checks ownership, stale/duplicate callbacks, hash changes, protected target
 rejection, explicit rectangle selection, other-image preservation, and every failure stage.
+
+
+## Promotion-free facts and risk-aware background edits
+
+Text cleanup remains before Jev. Obvious TG promotion headers/footers also have a small
+anchored deterministic rule, while the existing extraction model handles varied phrasing.
+After Vision, `pipeline/image_content.py` derives `content_text` from raw OCR: identified
+promotion strings/handles/URLs and standalone attribution metadata are excluded from publishing
+evidence. Raw `extracted_text`, protected mark geometry and provenance stay intact for QC.
+Promotion-related source_facts are filtered, fact packets/traceability and rewrite guards use
+clean publishing evidence, and known promotion identifiers cannot be reintroduced in drafts.
+Even legacy persisted analyses pass through the same evidence filtering.
+
+MarkRegion now records `removal_risk` and a localized `removal_reason`. Vision distinguishes
+plain screenshot/terminal background from functional UI controls, meaningful original text,
+numbers, identifiers, subjects and protected marks. A tight promotional rectangle on a simple,
+unambiguous UI background can be safe; merely being part of a screenshot is not a rejection
+criterion. `content_occluded`, `protected` and `uncertain` edits still fail closed, and a safe flag
+alone cannot override an explicit risk. Original source dimensions/outside pixels and all QC
+checks continue to apply.
+
+Image Tools includes a remembered **Allow an original information card if local cleanup is
+unsafe** option (`info_card_fallback`). It defaults off and composes with MINIMAL_CHANGES and
+REMOVE_OVERLAYS. Only explicit opt-in allows a NEW fact-verified, localized INFO_CARD when a
+promotion patch is unsafe. It does not edit the source or claim to preserve its exact layout;
+the review card identifies this fallback. Missing editing rights, sensitive sources or an
+explicit selection of a protected attribution target cannot be bypassed. The generator receives
+only the verified fact packet and editorial angle, never a documentary source photo. If a
+fallback needs a new packet, extraction/verification runs once per image job; no evaluation or
+text rewrite is repeated. Every new card still must pass Vision QC before final R2 storage.
+
+Telegram uses named R2 byte streams: a single BytesIO for one photo, lists for albums, caption
+on the first confirmed photo, `parse_mode=None` for untouched X draft text, and explicit photo
+receipts. Captions conservatively fit within 1024 UTF-16 units; longer text is sent intact as a
+related reply. Subsequent album batches do not duplicate captions. If the first photo's caption
+is not confirmed, text is still delivered separately rather than silently lost. Pending tasks
+continue to record per-image processing/transport failure stages and caption delivery receipts.
+
+`tests/test_promotion_bundle.py` covers text/OCR promotion isolation, source/rights preservation,
+empty-UI-background edits, risk-specific review, explicit card fallback, preference persistence,
+caption+album grouping in both locales, oversize text and partial Telegram acknowledgements.

@@ -21,8 +21,9 @@ class Recorder:
     def __init__(self, **returns: Any) -> None:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.returns = {"previous_uses": [], "list_media": [],
-                        "send_file": lambda chat, files, **kw: [
-                            SimpleNamespace(photo=object(), id=idx+1) for idx, _ in enumerate(files)],
+                        "send_file": lambda chat, files, **kw: (
+                            [SimpleNamespace(photo=object(), id=idx+1) for idx, _ in enumerate(files)]
+                            if isinstance(files, list) else SimpleNamespace(photo=object(), id=1)),
                         **returns}
 
     def __getattr__(self, name: str) -> Any:
@@ -72,3 +73,7 @@ def app(settings: AppSettings) -> SimpleNamespace:
         instance_id="test-host:1:abc",
         shutting_down=False,
     )
+
+
+def sent_files(file_arg):
+    return file_arg if isinstance(file_arg, list) else [file_arg]

@@ -27,7 +27,8 @@ You forward posts to the bot: text, photos, captions, albums, or several posts a
    Every output from the image model must pass a **visual QC check** before it is used. QC
    compares language, text, numbers, dates, names, brands/logos, people, watermarks, and facts. A failed check sends
    the image to review.
-4. You get a **draft** with buttons to approve, regenerate, or reject. You post it to X
+4. You get **images with the X draft attached as a caption**, followed by a related review card
+   with buttons to approve, regenerate, or reject. You post it to X
    yourself.
 
 **Storage is built for the R2 free tier.** Incoming media stays in memory only. Nothing is

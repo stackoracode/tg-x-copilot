@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import Recorder, png_bytes
+from conftest import Recorder, png_bytes, sent_files
 from test_bilingual import SOURCE, bot, env, good_qc
 from tg_x_copilot.image_settings import ImageAction, ImageOption, ImageOptions
 from tg_x_copilot.models import (
@@ -189,12 +189,13 @@ async def test_final_asset_reaches_telegram_as_photo_before_card_and_draft(app, 
         assert app.hub.cpa.named("images_edit")[0][0][2] != image.blob.data  # local crop only
     b = bot(app)
     await b.send_draft("a" * 32)
-    assert [n for n, _, _ in b.client.calls] == ["send_file", "send_message", "send_message"]
+    assert [n for n, _, _ in b.client.calls] == ["send_file", "send_message"]
     args, kwargs = b.client.named("send_file")[0]
-    assert args[1][0].getvalue() == final and args[1][0].name.endswith(".png")
+    assert sent_files(args[1])[0].getvalue() == final and sent_files(args[1])[0].name.endswith(".png")
     assert kwargs["force_document"] is False
     assert app.repo.task["draft_meta"]["delivery"]["0"]["sent"] is True
-    assert b.client.named("send_message")[-1][0][1] == app.repo.task["draft_text"]
+    assert kwargs["caption"] == app.repo.task["draft_text"]
+    assert b.client.named("send_message")[0][1]["reply_to"] == 1
 
 
 @pytest.mark.parametrize(
@@ -259,7 +260,7 @@ async def test_delivery_retry_clears_transport_failure_without_regenerating_draf
     await b.send_draft("a" * 32)
     b.client.returns["send_file"] = [SimpleNamespace(photo=object(), id=123)]
     await b.send_draft("a" * 32)
-    assert app.repo.task["draft_meta"]["delivery"]["0"] == {"sent": True, "message_id": 123}
+    assert app.repo.task["draft_meta"]["delivery"]["0"] == {"sent": True, "message_id": 123, "caption_sent": True}
     assert app.repo.task["draft_text"] == "Draft"
     assert app.repo.task["status"] == "draft_ready"
     assert len(app.hub.cpa.named("images_edit")) == 1
