@@ -217,6 +217,78 @@ facts are available, otherwise review. Rights are confirmed per media item, incl
 mixed-origin albums. Every generated/edit output is verified against source facts and the
 original image; failed checks never become final assets.
 
+## Image Tools and remembered choices
+
+Open Telegram `/images`, or **Image Tools** from `/menu` or a draft preview. The task preview
+keeps its compact approve/regenerate/reject controls and one Image Tools entry. Selections
+are automatically remembered **per operator**, including action, option checkboxes, preset,
+information density and image language. New tasks capture those choices on intake. Language
+settings also mark the current saved selection. Preferences survive restarts; there is no
+separate Save step for image choices.
+
+| Primary action | Behavior |
+|---|---|
+| `KEEP` | Keep a confirmed owned/authorized source unchanged |
+| `ENHANCE` | Improve quality while preserving original content and documentary meaning |
+| `LOCALIZE` | Translate explanation text; authorized source edits or original informational redraws |
+| `RECREATE` | Build an original visual from source-confirmed facts |
+| `CLEAN_RECREATE` | Build a new original visual excluding channel/promotion noise; never erase a source watermark |
+| `INFO_CARD` | Create an original non-documentary information card for the whole task |
+| `GENERATE` | Generate one original publishing visual, including tasks with no source image |
+| `OMIT` | Omit images |
+| `TEXT_ONLY` | Deliver only the text draft |
+
+Primary actions are mutually exclusive. The first-use **Automatic** choice retains the prior
+rights-aware policy. Options compose: preserve brands/identifiers, translate explanation text,
+prefer a similar layout or allow redesign, exclude promotional overlays, prioritize factual
+accuracy/visual quality, or minimize changes. Conflicting layout preferences replace the prior
+choice; safety, source rights and factual fidelity always override preferences. Authorized
+informational localization may use a new design when redesign is selected. Documentary photos
+are never reconstructed into invented news scenes; original new cards are clearly non-documentary.
+Source-dependent actions on a text-only task return review guidance to select Generate/Info card.
+
+Information density defaults to `medium`: `low` uses one core point and minimal text;
+`medium` uses a short supported hook/title with about 2–4 valuable points; `high` may add
+technical details using short labels/grouped cards. Never invent points to fill a template.
+All new images must remain readable on the mobile X feed. `zh-CN` uses Simplified Chinese,
+`en-US` uses English; factual brand names, products/models, protocols and identifiers retain
+their spelling. Image language defaults to following the task; an explicit remembered override
+is shown in the publishing bundle while the existing draft and UI retain their task language.
+
+Generators consume a **verified fact packet** with exact evidence spans from cleaned core
+content/source OCR, checked for numeric traceability and semantic entailment. This means
+source-supported, not independently proven true. Editorial background and the final post are
+never evidence for new image claims. The final hook/angle guides presentation only. Image2.5
+uses the existing configurable `models.image_model`/CPA transport. Every edited, recreated or
+generated result undergoes Vision verification of facts, numbers, dates, names, brands,
+product/model/protocol identifiers, language, density and readability. Informational redesign
+checks meaning rather than pixel/layout similarity; documentary edits preserve people/content.
+Any failed/missing check is REVIEW, and no failed candidate becomes a final asset.
+
+Choose **Run images only** in a task's tools to reprocess images without rewriting its text.
+This queues an atomic, recoverable `images_only` job through the existing worker pool. Its
+stored draft stays byte-identical; image errors/timeouts preserve the draft. Existing sources
+are re-fetched when necessary, and fact packets are backfilled for older drafts from cleaned
+core/source OCR. New assets are prepared/QC-checked before old R2 references are released;
+reference counting, compression, budget limits and retention policies remain in place. Telegram
+returns the resulting images plus the existing post, and failed visuals remain review items.
+
+Preferences use typed, non-secret `image_preferences:<user_id>` rows in the existing settings
+table; runtime config queries exclude that namespace. No database migration is required.
+To add an action, extend `ImageAction`, its `ACTIONS` strategy/preset entry and locale data.
+For options, extend `ImageOption` and locale guidance/conflict metadata. Telegram builds menus
+from these registries and the pipeline executes the shared keep/edit/create/omit strategies.
+A fundamentally new execution strategy needs its own executor, not more callback branches.
+
+Implementation references: [Telethon inline buttons](https://docs.telethon.dev/en/stable/modules/custom.html#telethon.tl.custom.button.Button.inline)
+and [callback query answer/edit](https://docs.telethon.dev/en/stable/modules/events.html#telethon.events.callbackquery.CallbackQuery).
+Callbacks contain short identifiers (at most 64 bytes), acknowledge promptly, use idempotent
+option set/unset values and edit submenus in place. Operator/task/chat ownership is checked
+before task operations. Natural-writing guidance is informed by
+[blader/humanizer](https://github.com/blader/humanizer): concrete details, natural rhythm and
+less filler, without fabricated personal experience or mistakes. No detector dependency or
+external text submission is added, and passing AI detectors is neither tested nor promised.
+
 ## Debugging on a VPS
 
 - `LOG_JSON=false` gives readable logs. Each line during processing carries `task_id=...`.

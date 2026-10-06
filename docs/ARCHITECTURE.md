@@ -112,12 +112,20 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
    4. **Evaluate.** The main LLM acts as an editor: key facts from the source, allowed
       background, risks, the angle, and whether the content is suitable. If it is not
       suitable, the task is skipped and nothing is stored.
-   5. **Rewrite.** The main LLM writes JSON, then deterministic guards and a separate typed language check verify it. Wrong-language candidates are retried and never kept as publishable drafts.
+   5. **Rewrite.** Locale prompts include lightweight natural-writing rules and factual hooks. The main LLM writes JSON, then deterministic guards and a separate typed language check verify it. Wrong-language candidates are retried and never kept as publishable drafts.
       - Blocking *problems* (fabricated numbers, clickbait, too close to the source, and so
         on) are retried with the problems as feedback.
       - *Review items* do not trigger retries. These are `background` claims the LLM added,
         and numbers backed only by LLM-extracted facts. They force `needs_review`.
-   6. **Images.** The policy decides keep, enhance, localize, recreate, or review. Outputs are
+   6. **Images.** Typed `image_action` and composable `image_options` are captured on the
+      envelope; action/option/preset registries drive menus and shared execution strategies.
+      The automatic policy remains the first-use default. Source-confirmed fact packets
+      contain exact cleaned-core/OCR evidence spans and undergo numeric/semantic checks.
+      Generators use those packets plus the final editorial angle, never noisy original
+      content or unverified editorial background. Text-only GENERATE/INFO_CARD produces a
+      synthetic `task_media` row (`kind=generated`) linked to the originating text message.
+      OMIT/TEXT_ONLY and unchanged KEEP do not require image generation/fact extraction.
+      The policy decides keep, enhance, localize, recreate, generate, omit, or review. Outputs are
       produced and optimized **in memory**.
       - Every image-model output (enhance, localize, regenerate) must then pass **visual
         QC** (`pipeline/image_qc.py`, prompt `image_qc.md`).
@@ -143,7 +151,15 @@ the workers, and the sweeper. That gives one deploy unit, one log stream, and on
      are deleted, and so are final assets unless `STORAGE__RETAIN_APPROVED_ASSETS=true`; they
      were already delivered to Telegram with the draft.
    - **Reject:** the task becomes `rejected` and all its assets are released.
-   - **Regenerate:** all assets are released and the task is re-queued. Media is fetched
+   - **Run images only:** an owner/status compare-and-set queues an `images_only` request in
+     the original envelope, retaining the draft. The existing worker claim, lease/sweeper and
+     cancellation rules apply. No evaluation/rewrite runs. Fact packets are reused/backfilled,
+     images are executed and verified, then previous asset refs are released and replaced.
+     New source rows and a synthetic generated row are prepared through the same repository.
+     Text review items stay separate from media review items. On an image-only timeout/error,
+     the text draft stays intact and status becomes needs_review.
+   - **Regenerate:** all assets are released and the task is re-queued in full mode, with the
+     operator's remembered image preferences. Media is fetched
      again from Telegram. Regeneration adopts the current configured locale and market.
 
 ### Task state machine
@@ -274,6 +290,34 @@ at MVP volume. A thread-confined pool can replace it later behind the same async
   | Own low-quality informational visual | recreate |
   | Authorized low-quality photo | enhance without changing documentary content |
   | Own good media | keep |
+
+## Image actions, preferences and verification
+
+- `image_settings.py`: typed mutually exclusive actions, combinable options, densities and
+  category aliases. `ACTIONS` chooses keep/edit/create/omit execution and verification mode.
+  `PRESETS` supplies useful option bundles; new entries require no transport switch cases.
+- `services/image_preferences.py`: per-operator read/update in an existing settings namespace,
+  serialized per operator for concurrent callbacks. Runtime config ignores that namespace;
+  preferences have a strict non-secret schema. Intake snapshots them, and reprocessing requests
+  use an atomic owner/status update before entering the existing queue.
+- `bot/image_tools.py`: compact callbacks, checked ownership, immediate answer, submenu edits,
+  explicit idempotent checkbox state changes and remembered density/locale. No long-running
+  generation work happens inside a callback. Only Image Tools is added to each draft preview.
+- `pipeline/facts.py`: exact evidence, numeric traceability, narrative language and semantic
+  entailment checks. Source confirmation does not independently establish truth. Fact packets
+  and immutable source OCR/canonical content are saved in draft metadata for reuse.
+- Media categories distinguish documentary photos, UI screenshots, infographics, mixed
+  layouts, generic visuals, brand assets and text input; old analysis aliases remain supported.
+  Channel overlays are not ordinary brand/product logos. Documentary edits preserve people and
+  scene; new visual replacements are non-documentary cards/illustrations, never fake photographs.
+- Locale data (`image_actions.json`, `image_execute.md`) provides action/option/density guidance.
+  Medium density defaults to a title/hook and 2–4 supported points, with low/high alternatives.
+  Every image-model output is checked for identifiers, source meaning, language, readability and
+  appropriate density. Original information redesign has no pixel/layout similarity requirement.
+  Authorized enhancement/localization may preserve source detail beyond the density point count.
+- Source-dependent operations on plain text require review; GENERATE/INFO_CARD can operate with
+  a confirmed fact packet alone. Generators never receive third-party source images; Vision QC
+  may inspect them as references. Failed candidates are never final assets.
 
 ## i18n design
 
