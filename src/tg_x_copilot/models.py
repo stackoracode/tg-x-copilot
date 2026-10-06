@@ -81,6 +81,8 @@ class InputEnvelope(BaseModel):
     chat_id: int
     user_id: int
     message_ids: list[int]
+    status_message_id: int | None = None
+    media_edit_rights_confirmed: bool = False  # personal declaration snapshotted at intake
     grouped_ids: list[int] = Field(default_factory=list)
     text: str = ""
     message_texts: list[str] = Field(default_factory=list)  # one caption per message

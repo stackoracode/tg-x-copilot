@@ -104,6 +104,8 @@ def keyboard(scope: str, prefs: ImagePreferences, tr, page: str = "main"):
             )
             for action in ACTIONS
         ]
+        rows.append([button("image_tools_authorized_media", "rights",
+                            "0" if prefs.authorized_media else "1", prefs.authorized_media)])
         rows += [choices[idx : idx + 2] for idx in range(0, len(choices), 2)]
         rows += [
             [
@@ -177,12 +179,16 @@ class ImageTools:
             ok, message = await app.ops.rerun_images(scope, event.sender_id, manual)
             await event.respond(message)
             return
-        if command in ("a", "p", "o", "d", "l", "w"):
+        if command in ("a", "p", "o", "d", "l", "w", "rights"):
 
             def mutate(prefs):
                 values = prefs.model_dump()
                 opts = prefs.image_options
-                if command == "w":
+                if command == "rights":
+                    if value not in ("0", "1"):
+                        raise ValueError("invalid rights declaration")
+                    values["authorized_media"] = value == "1"
+                elif command == "w":
                     values["workflow_mode"] = WorkflowMode(value)
                 elif command == "a":
                     values["image_action"] = (

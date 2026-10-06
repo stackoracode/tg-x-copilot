@@ -124,6 +124,7 @@ class ImageOptions(BaseModel):
 class ImagePreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
     workflow_mode: WorkflowMode = WorkflowMode.MANUAL
+    authorized_media: bool = False  # operator-declared rights, never inferred from forwarding
     image_action: ImageAction | None = (
         None  # automatic rights-aware policy for existing tasks
     )

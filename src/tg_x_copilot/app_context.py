@@ -65,12 +65,15 @@ class AppContext:
     # ------------------------------------------------------------------ intake
 
     async def intake(self, chat_id: int, user_id: int, messages: list[Any], *,
-                     preferences: ImagePreferences | None = None) -> None:
+                     preferences: ImagePreferences | None = None,
+                     status_message_id: int | None = None) -> None:
         cfg = self.config.current
         env = normalize(messages, chat_id=chat_id, user_id=user_id,
                         locale=cfg.default_locale, market=cfg.market)
         preferences = preferences or await self.image_preferences.get(user_id)
         effective = resolve_workflow(preferences, has_images=has_image_source(env.media))
+        env.status_message_id = status_message_id
+        env.media_edit_rights_confirmed = effective.authorized_media
         env.workflow_mode = effective.workflow_mode
         env.image_action = effective.image_action
         env.image_options = effective.image_options
@@ -81,8 +84,13 @@ class AppContext:
                                   f"{len(env.message_ids)} message(s), {len(env.media)} media",
                                   data={"message_ids": env.message_ids})
         log.info("task created", extra=ctx(task_id=task_id, messages=len(env.message_ids)))
+        if self.telegram and status_message_id is not None:
+            try:
+                await self.telegram.update_task_status(task_id, "queued")
+            except Exception:
+                log.exception("queue receipt update failed")
         await self.workers.enqueue(task_id, wait=False)  # sweeper catches overflow
-        if self.telegram and env.workflow_mode != WorkflowMode.AUTO_BUNDLE:
+        if self.telegram and status_message_id is None and env.workflow_mode != WorkflowMode.AUTO_BUNDLE:
             await self.telegram.notify(chat_id, self.i18n.t(
                 env.locale, "queued", count=len(env.message_ids), task_id=task_id))
 

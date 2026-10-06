@@ -56,6 +56,17 @@ class Repository:
             " '$.locale', %s, '$.market', %s, '$.processing_mode', 'full', '$.image_retry_indices', NULL) WHERE id=%s",
             (locale, market, locale, market, task_id))
 
+    async def save_image_edit_authorization(self, task_id: str, authorization: ImageEditAuthorization) -> None:
+        # JSON_SET touches only this source-bound grant; keep all other envelope state intact.
+        n = await self.db.execute(
+            "UPDATE tasks SET envelope=JSON_SET(envelope, %s, JSON_EXTRACT(%s, '$')) "
+            "WHERE id=%s AND tg_user_id=%s",
+            (f'$.image_edit_authorizations."{authorization.image_idx}"',
+             _dumps(authorization), task_id, authorization.user_id),
+        )
+        if n != 1:
+            raise RuntimeError("could not persist task-specific media authorization")
+
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         row = await self.db.fetchone("SELECT * FROM tasks WHERE id=%s", (task_id,))
         return _decode(row, _TASK_JSON)

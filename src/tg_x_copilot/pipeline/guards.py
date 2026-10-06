@@ -183,3 +183,14 @@ def wrong_language(text: str, locale: str) -> bool:
         return (not cjk and len(re.findall(r'\b[A-Za-z]+\b', prose)) >= 4) or bool(
             re.search(r'\b(?:the|this|these|there|we|you|it)\s+(?:is|are|was|were|will|should|can)\b', prose, re.I))
     return False
+
+
+def has_unwanted_publishing_frame(post: str, locale: str) -> bool:
+    """Reject boilerplate at paragraph boundaries; never strip legitimate source facts."""
+    from .. import prompts
+    rules = prompts.render_json("publishing_style", locale)
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", post) if part.strip()]
+    sentences = [part.strip() for part in re.split(r"[。.!?！？]", post) if part.strip()]
+    tail = paragraphs[-1] if len(paragraphs) > 1 else (sentences[-1] if sentences else "")
+    return bool(re.search(rules["opening"], post, re.I) or
+                re.search(rules["closing"], tail, re.I))

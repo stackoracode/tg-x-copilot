@@ -117,7 +117,7 @@ async def test_exact_production_combination_generates_qc_saves_and_sends_caption
         assert sent[1].getvalue() == app.hub.r2.objects[final["asset_key"]]
         assert kw["caption"] == draft and kw["parse_mode"] is None and kw["force_document"] is False
         assert [name for name, _, _ in b.client.calls] == ["send_file", "send_message"]
-        assert b.client.named("send_message")[0][1]["reply_to"] == 1
+        assert b.client.named("send_message")[0][1]["reply_to"] == 10
         assert app.repo.task["draft_meta"]["delivery"]["1"]["sent"]
         assert app.repo.task["status"] == "draft_ready"
     assert not needs_edit_confirmation(app.repo.task, app.repo.media[0])

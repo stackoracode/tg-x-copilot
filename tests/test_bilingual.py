@@ -417,7 +417,7 @@ async def test_failed_notification_hides_errors_and_uses_task_language(app, code
     app.repo.returns['get_task'] = {'locale':code, 'tg_chat_id':5}
     app.telegram = Recorder()
     await Pipeline(app).mark_failed('t1', RuntimeError('upstream error with private configuration'))
-    message = app.telegram.named('notify')[0][0][1]
+    message = app.telegram.named('update_task_status')[-1][1]['text']
     assert t(code, 'task_failure') in message
     assert 'private configuration' not in message
     assert not wrong_language(message, code)

@@ -359,6 +359,22 @@
     "image_tools_auto_bundle_help": "Enabled: forwards within 3 seconds form one task. Recreate source images as original visuals; text-only tasks receive an information card. Images and draft arrive together, without source-edit confirmation. Manual reruns use the selected action.",
     "btn_rerun_images": "🔄 Redo images",
     "auto_bundle_evaluate": "Automatic bundle requested; continuing to factual evaluation with Jev warnings retained.",
-    "auto_bundle_image_limit": "Available source material was combined; this X bundle contains up to {count} original visuals, so additional source images are not separately output."
+    "auto_bundle_image_limit": "Available source material was combined; this X bundle contains up to {count} original visuals, so additional source images are not separately output.",
+    "task_received": "📥 Received. Preparing your publishing bundle…",
+    "task_progress_queued": "⏳ Task {task_id}: queued",
+    "task_progress_clean": "🧹 Task {task_id}: cleaning source content",
+    "task_progress_triage": "🔎 Task {task_id}: assessing core content",
+    "task_progress_media": "📥 Task {task_id}: loading images",
+    "task_progress_vision": "👁 Task {task_id}: extracting image facts",
+    "task_progress_evaluate": "🔎 Task {task_id}: choosing the editorial angle",
+    "task_progress_rewrite": "✍️ Task {task_id}: writing the X draft",
+    "task_progress_images": "🎨 Task {task_id}: generating or correcting images",
+    "task_progress_qc": "🔍 Task {task_id}: verifying image facts",
+    "task_progress_policy": "⚠️ Task {task_id}: checking image editing scope",
+    "task_progress_persist": "☁️ Task {task_id}: saving final images",
+    "task_progress_delivery": "📤 Task {task_id}: sending the publishing bundle",
+    "image_tools_authorized_media": "My forwarded media is authorized for editing",
+    "guard_publish_style": "Lead with the subject. Remove source-preface openers and verification, compatibility, installation or testing footers; keep necessary attribution and uncertainty in the body.",
+    "task_delivery_failed": "⛔ Task {task_id}: [TELEGRAM_SEND] Publishing bundle delivery failed. Please retry later."
   }
 }

@@ -243,7 +243,7 @@ async def test_regular_forwards_become_separate_tasks_and_albums_one(app):
     app.intake = Recorder().intake
     calls: list[list[Any]] = []
 
-    async def intake(chat_id: int, user_id: int, messages: list[Any]) -> None:
+    async def intake(chat_id: int, user_id: int, messages: list[Any], **kwargs) -> None:
         calls.append(messages)
 
     app.intake = intake

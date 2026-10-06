@@ -6,6 +6,7 @@ and them. All outgoing text uses HTML parse mode with escaped dynamic content.
 
 from __future__ import annotations
 
+import asyncio
 import html
 import io
 import logging
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from telethon import Button, TelegramClient, events
+from telethon.errors import MessageNotModifiedError
 
 from ..i18n import label
 from ..models import MediaFailureStage, TaskStatus
@@ -92,6 +94,47 @@ class TelegramBot:
             kwargs["reply_to"] = reply_to
         await self.client.send_message(chat_id, text[:_MAX_MSG], **kwargs)
 
+    async def update_task_status(self, task_id: str, step: str, *, text: str | None = None,
+                                 buttons: Any = None, reply_to: int | None = None) -> None:
+        try:
+            task = await self.app.repo.get_task(task_id)
+        except Exception:
+            log.exception("loading task for progress update failed", extra=ctx(task_id=task_id))
+            return
+        if not task:
+            return
+        envelope = task.get("envelope") or {}
+        status_id = envelope.get("status_message_id")
+        if text is None:
+            key = "task_progress_" + step
+            text = self.app.i18n.t(task["locale"], key, task_id=task_id[:8])
+        if not status_id:
+            # Pre-existing tasks retain their review-card delivery behavior.
+            if text and step == "final":
+                ids = envelope.get("message_ids") or []
+                await self.notify(task["tg_chat_id"], text, buttons,
+                                  reply_to=min(ids) if ids else reply_to)
+            return
+        try:
+            await self.client.edit_message(task["tg_chat_id"], status_id, text[:_MAX_MSG],
+                                           buttons=buttons, link_preview=False)
+        except MessageNotModifiedError:
+            pass
+        except Exception:
+            # A status-card transport problem must never suppress the publishing bundle.
+            log.exception("editing task status failed", extra=ctx(task_id=task_id))
+
+    async def _receipt(self, event: Any, messages: list[Any]) -> int | None:
+        try:
+            sent = await self.client.send_message(
+                event.chat_id, self.t("task_received"), link_preview=False,
+                reply_to=min(m.id for m in messages),
+            )
+            return getattr(sent, "id", None)
+        except Exception:
+            log.exception("sending intake receipt failed")
+            return None
+
     async def fetch_media(self, chat_id: int, message_ids: list[int]) -> dict[int, bytes]:
         out: dict[int, bytes] = {}
         messages = await self.client.get_messages(chat_id, ids=message_ids)
@@ -115,6 +158,8 @@ class TelegramBot:
             return app.i18n.t(task.get("locale", app.config.current.default_locale), key, **kw)
         locale = task.get("locale", app.config.current.default_locale)
         chat_id = task["tg_chat_id"]
+        source_ids = (task.get("envelope") or {}).get("message_ids") or []
+        source_reply = min(source_ids) if source_ids else None
         meta = task.get("draft_meta") or {}
         media = await app.repo.list_media(task_id)
 
@@ -179,6 +224,8 @@ class TelegramBot:
                 file_arg = batch[0][1] if len(batch) == 1 else [bio for _, bio in batch]
                 caption_arg = caption if len(batch) == 1 else [caption] + [""] * (len(batch)-1)
                 kwargs = {"caption": caption_arg, "parse_mode": None, "force_document": False}
+                if source_reply is not None:
+                    kwargs["reply_to"] = source_reply
                 if len(files) == 1:
                     # Telegram albums have no inline markup; single-photo bundles can carry controls.
                     kwargs["buttons"] = [[
@@ -270,11 +317,11 @@ class TelegramBot:
         auth_buttons = [[Button.inline(tr("btn_confirm_edit_rights", idx=m["idx"]),
                                        f"ia:{task_id}:{m['idx']}".encode())]
                         for m in media if needs_edit_confirmation(task, m)]
-        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, *auth_buttons, [Button.inline(tr("btn_rerun_images"), f"t:i:{task_id}".encode()), image_button]], reply_to=anchor_id)
+        await self.update_task_status(task_id, "final", text="\n".join(lines), buttons=[buttons, *auth_buttons, [Button.inline(tr("btn_rerun_images"), f"t:i:{task_id}".encode()), image_button]], reply_to=anchor_id)
         if draft and not caption_sent:
             kwargs = {"parse_mode": None, "link_preview": False}
-            if anchor_id is not None:
-                kwargs["reply_to"] = anchor_id
+            if source_reply is not None or anchor_id is not None:
+                kwargs["reply_to"] = source_reply if source_reply is not None else anchor_id
             await self.client.send_message(chat_id, draft, **kwargs)
 
     # ------------------------------------------------------------------ handlers
@@ -321,32 +368,47 @@ class TelegramBot:
         await self._receive(event, list(event.messages))
 
     async def _receive(self, event: Any, messages: list[Any]) -> None:
-        service = getattr(self.app, "image_preferences", None)
-        preferences = await service.get(event.sender_id) if service else ImagePreferences()
-        key = (event.chat_id, event.sender_id)
-        collector = getattr(self, "_collector", None)
-        if preferences.workflow_mode == WorkflowMode.AUTO_BUNDLE and getattr(self.app, "shutting_down", False):
-            await self._intake(event, messages, preferences=preferences)
-        elif preferences.workflow_mode == WorkflowMode.AUTO_BUNDLE:
-            if collector is None:
-                collector = self._collector = BundleCollector()
-            async def emit(bundle, snapshot):
-                await self._intake(event, bundle, preferences=snapshot)
-            await collector.add(key, messages, preferences, emit)
-        else:
-            if collector:
-                await collector.flush(key)
-            await self._intake(event, messages)
-
-    async def _intake(self, event: Any, messages: list[Any], *, preferences: ImagePreferences | None = None) -> None:
-        try:
-            if preferences is None:
-                await self.app.intake(event.chat_id, event.sender_id, messages)
+        # Serialize receipt creation and collector insertion so simultaneous album/text events
+        # share one status message. The collector owns the first event's emit closure.
+        if not hasattr(self, "_intake_lock"):
+            self._intake_lock = asyncio.Lock()
+        async with self._intake_lock:
+            service = getattr(self.app, "image_preferences", None)
+            preferences = await service.get(event.sender_id) if service else ImagePreferences()
+            key = (event.chat_id, event.sender_id)
+            collector = getattr(self, "_collector", None)
+            automatic = preferences.workflow_mode == WorkflowMode.AUTO_BUNDLE
+            if automatic and not getattr(self.app, "shutting_down", False):
+                if collector is None:
+                    collector = self._collector = BundleCollector()
+                status_id = None if key in collector.pending else await self._receipt(event, messages)
+                async def emit(bundle, snapshot):
+                    await self._intake(event, bundle, preferences=snapshot,
+                                       status_message_id=status_id)
+                await collector.add(key, messages, preferences, emit)
             else:
-                await self.app.intake(event.chat_id, event.sender_id, messages, preferences=preferences)
+                if collector:
+                    await collector.flush(key)
+                status_id = await self._receipt(event, messages)
+                await self._intake(event, messages, preferences=preferences,
+                                   status_message_id=status_id)
+
+    async def _intake(self, event: Any, messages: list[Any], *, preferences: ImagePreferences | None = None,
+                      status_message_id: int | None = None) -> None:
+        try:
+            kwargs = {}
+            if preferences is not None:
+                kwargs["preferences"] = preferences
+            if status_message_id is not None:
+                kwargs["status_message_id"] = status_message_id
+            await self.app.intake(event.chat_id, event.sender_id, messages, **kwargs)
         except Exception:
             log.exception("intake failed")
-            await event.respond(self.t("action_failed", result=self.t("generic_failure")))
+            text = self.t("action_failed", result=self.t("generic_failure"))
+            if status_message_id is not None:
+                await self.client.edit_message(event.chat_id, status_message_id, text)
+            else:
+                await event.respond(text)
 
     async def _on_callback(self, event: events.CallbackQuery.Event) -> None:
         if not self._authorized(event.sender_id):

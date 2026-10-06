@@ -359,6 +359,22 @@
     "image_tools_auto_bundle_help": "已开启：3 秒内连续转发合为一个任务。有图逐张原创重绘，纯文本自动配信息卡片，图片与文案一起返回，无需确认原图编辑权限。手动重跑使用所选操作。",
     "btn_rerun_images": "🔄 重新做图",
     "auto_bundle_evaluate": "已请求自动内容包，保留 Jev 提示并继续核实内容。",
-    "auto_bundle_image_limit": "可用素材已汇总，本 X 内容包最多输出 {count} 张原创配图，额外源图不单独输出。"
+    "auto_bundle_image_limit": "可用素材已汇总，本 X 内容包最多输出 {count} 张原创配图，额外源图不单独输出。",
+    "task_received": "📥 已收到，正在准备发布内容包…",
+    "task_progress_queued": "⏳ 任务 {task_id}：已排队",
+    "task_progress_clean": "🧹 任务 {task_id}：正在清理素材",
+    "task_progress_triage": "🔎 任务 {task_id}：正在判断核心内容",
+    "task_progress_media": "📥 任务 {task_id}：正在读取图片",
+    "task_progress_vision": "👁 任务 {task_id}：正在提取图片事实",
+    "task_progress_evaluate": "🔎 任务 {task_id}：正在选择文案切入点",
+    "task_progress_rewrite": "✍️ 任务 {task_id}：正在生成 X 文案",
+    "task_progress_images": "🎨 任务 {task_id}：正在生成或修正图片",
+    "task_progress_qc": "🔍 任务 {task_id}：正在核验图片事实",
+    "task_progress_policy": "⚠️ 任务 {task_id}：正在检查图片编辑范围",
+    "task_progress_persist": "☁️ 任务 {task_id}：正在保存最终图片",
+    "task_progress_delivery": "📤 任务 {task_id}：正在发送发布内容包",
+    "image_tools_authorized_media": "我转发的素材已获编辑授权",
+    "guard_publish_style": "直接进入主题，删除模板化来源开头和核实、兼容性、安装或测试尾注；必要的来源与不确定性写入正文。",
+    "task_delivery_failed": "⛔ 任务 {task_id}：[TELEGRAM_SEND] 发布内容发送失败，请稍后重试。"
   }
 }

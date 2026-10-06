@@ -174,7 +174,7 @@ The admin UI listens on `127.0.0.1:8080`. Open it through an SSH tunnel:
   forwards within 3 seconds form one task; source images are recreated as original visuals,
   and text-only input receives an original information card. No source-edit permission dialog
   is needed, because this mode does not edit/repost the original files.
-- Final images carry the X draft as a caption. A related review card shows ⛔ blocking problems,
+- Final images carry the X draft as a caption. The original status reply becomes the review card, showing ⛔ blocking problems,
   🔎 items to review, image decisions and warnings. Single-photo bundles also carry **Redo images**
   and **Image Tools** buttons; albums use the related card. Oversize captions remain intact in a
   related text reply. Image-only reruns keep the draft unchanged.
@@ -222,6 +222,34 @@ Unlicensed real-person/news photos become clearly non-documentary information ca
 facts are available, otherwise review. Rights are confirmed per media item, including
 mixed-origin albums. Every generated/edit output is verified against source facts and the
 original image; failed checks never become final assets.
+
+## Telegram progress and publishing replies
+
+Each incoming task immediately gets one receipt replying to the first forwarded message.
+Automatic mode groups messages within the existing three-second idle window (bounded by
+12 seconds/20 messages); one burst shares one receipt. The receipt message ID is persisted
+in `tasks.envelope.status_message_id`. Queue, editorial work, image generation/retry, QC,
+R2 storage and delivery update this same message. Final review reasons and action controls
+replace its progress text. The publishing draft/photo or album replies directly to the original
+forward, with the draft as its caption when it fits Telegram's 1024 UTF-16-unit caption limit.
+Longer drafts are delivered in full as an additional source-threaded text reply. Multi-photo
+outputs are Telegram albums, rather than a single photo message. Transport failures retain
+stage-specific diagnostics on the status card; status edit failures never suppress delivery.
+
+Image Tools remembers the operator's **My forwarded media is authorized for editing**
+declaration. It defaults off for new operators and is enabled for an operator only on their
+explicit declaration. Every new task snapshots that choice; each downloaded image receives
+its own grant in `tasks.envelope.image_edit_authorizations`, bound to task ID, image index,
+operator and source SHA-256. This does not change the global owned-source configuration.
+Disabling the declaration affects future tasks. Grants never permit removing photographer,
+author or copyright marks; scoped promotion cleanup still preserves protected areas and
+must pass QC. Documentary scenes and identities cannot be invented even for authorized images.
+
+Publishing drafts open directly with the topic. Necessary source attribution/uncertainty stays
+in the body; generic source-preface openers and verification/compatibility/testing footers
+trigger rewriting. Image text contains only explicitly supported facts, with no invented
+installation instructions or advisory labels. Internal risks and review reasons remain available
+on the status card instead of being appended to the publishing draft.
 
 ## Image Tools and remembered choices
 

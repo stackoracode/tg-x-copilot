@@ -1,0 +1,4 @@
+{
+  "opening": "^\\s*[\\s#*\"]*(?:image description|reportedly|according to (?:reports?|research|the source)|the image shows)\\b",
+  "closing": "\\b(?:please|remember to|make sure to|before (?:using|posting)|you should)\\b.{0,60}\\b(?:verify|check compatibility|install|test|confirm)\\b"
+}

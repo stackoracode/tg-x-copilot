@@ -28,11 +28,11 @@ from ..logging_setup import ctx as log_ctx
 from ..logging_setup import mask
 from ..models import (
     Evaluation, ImageAnalysis, ImageDecision, ImageQC, InputEnvelope, MediaKind,
-    MediaResult, RewriteResult, SourceMedia, TaskStatus, TriageResult, VerifiedFacts, MediaFailureStage, MarkRegion,
+    MediaResult, RewriteResult, SourceMedia, TaskStatus, TriageResult, VerifiedFacts, MediaFailureStage, MarkRegion, ImageEditAuthorization,
 )
 from ..services.storage import StorageBudgetExceeded
 from .cleaning import clean_bundle
-from .guards import GuardReport, XRules, check_rewrite, x_length
+from .guards import GuardReport, XRules, check_rewrite, x_length, has_unwanted_publishing_frame
 from .language import is_localized
 from .image_policy import plan, media_is_owned, has_task_edit_authorization
 from .media_errors import media_error_reason
@@ -84,6 +84,16 @@ class Pipeline:
             await self.app.repo.add_event(task_id, step, mask(message), level=level, data=data)
         except Exception:
             log.exception("failed to write task event")
+        progress = {"start": "clean", "clean": "triage", "triage": "media", "media": "vision",
+                    "vision": "evaluate", "evaluate": "rewrite", "rewrite": "images",
+                    "IMAGE2": "qc", "IMAGE_QC": "images" if "retrying" in message else "qc",
+                    "IMAGE_POLICY": "policy", "images": "persist", "R2_UPLOAD": "persist",
+                    "persist": "delivery", "done": "delivery"}.get(step)
+        if progress and self.app.telegram:
+            try:
+                await self.app.telegram.update_task_status(task_id, progress)
+            except Exception:
+                log.exception("updating task progress failed")
 
     @staticmethod
     def _source_info(env: InputEnvelope) -> str:
@@ -273,9 +283,8 @@ class Pipeline:
             await self._event(task_id, "failed", error, level="error")
             task = await self.app.repo.get_task(task_id)
             if task and self.app.telegram:
-                await self.app.telegram.notify(
-                    task["tg_chat_id"],
-                    self.app.i18n.t(task["locale"], "failed", task_id=task_id,
+                await self.app.telegram.update_task_status(
+                    task_id, "final", text=self.app.i18n.t(task["locale"], "failed", task_id=task_id,
                                     error=t(task["locale"], "task_failure")),
                 )
         except Exception:
@@ -287,8 +296,8 @@ class Pipeline:
         await self._event(task_id, "skipped", reason)
         if self.app.telegram:
             try:
-                await self.app.telegram.notify(
-                    env.chat_id, self.app.i18n.t(env.locale, "skipped", task_id=task_id,
+                await self.app.telegram.update_task_status(
+                    task_id, "final", text=self.app.i18n.t(env.locale, "skipped", task_id=task_id,
                                                  reason=html.escape(reason[:300], quote=False)))
             except Exception:
                 log.exception("notify skipped failed")
@@ -303,7 +312,14 @@ class Pipeline:
                 await self.app.telegram.send_draft(task_id, only_indices=only_indices)
         except Exception:
             log.exception("sending draft to Telegram failed")
-            await self._event(task_id, "notify", "sending draft to Telegram failed", level="warning")
+            await self._event(task_id, "TELEGRAM_SEND", "sending draft to Telegram failed", level="warning")
+            try:
+                task = await self.app.repo.get_task(task_id)
+                if task:
+                    await self.app.telegram.update_task_status(task_id, "final", text=
+                        t(task["locale"], "task_delivery_failed", task_id=task_id[:8]))
+            except Exception:
+                log.exception("updating delivery failure status failed")
 
     # ------------------------------------------------------------------ steps
 
@@ -397,6 +413,11 @@ class Pipeline:
                 warnings.append(t(env.locale, "media_duplicate", idx=idx, task_id=prev["task_id"][:8],
                                   status=label(env.locale, prev["status"])))
                 break
+            if env.media_edit_rights_confirmed:
+                authorization = ImageEditAuthorization(task_id=task_id, image_idx=idx,
+                    source_sha256=blob.sha256, user_id=env.user_id)
+                await repo.save_image_edit_authorization(task_id, authorization)
+                env.image_edit_authorizations[str(idx)] = authorization
             loaded.append(LoadedImage(idx, blob, sm))
 
         await self._event(task_id, "media",
@@ -509,6 +530,8 @@ class Pipeline:
                 )
             report = check_rewrite(result, source_text=env.text, rules=rules,
                                    verified_facts=verified, unverified_facts=unverified, locale=locale.code)
+            if has_unwanted_publishing_frame(result.post, locale.code):
+                report.problems.append(t(locale.code, "guard_publish_style"))
             if any(contains_promotion(result.post, a) for a in analyses.values()):
                 report.problems.append(t(locale.code, "guard_promotion"))
             language_ok = await is_localized(
