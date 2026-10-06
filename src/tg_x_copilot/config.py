@@ -142,6 +142,7 @@ class PipelineSettings(BaseModel):
     max_rewrite_attempts: int = 3
     max_media_bytes: int = 20 * 1024 * 1024
     task_timeout_seconds: float = 900.0
+    max_post_chars: int = 280  # standard: 280, X Premium: up to 25,000
     # Telegram chat IDs (e.g. -100123...) whose media the operator owns the rights to.
     # Only media from these sources may be kept or enhanced; everything else is
     # regenerated as an original visual or flagged for review.
@@ -216,6 +217,7 @@ EDITABLE_KEYS: frozenset[str] = frozenset({
     "storage.graphic_max_side",
     "storage.jpeg_quality",
     "pipeline.max_rewrite_attempts",
+    "pipeline.max_post_chars",
     "pipeline.owned_source_ids",
     "pipeline.direct_uploads_owned",
 })

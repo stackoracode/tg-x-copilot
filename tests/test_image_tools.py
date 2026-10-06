@@ -516,12 +516,14 @@ async def test_repository_image_job_uses_owner_and_status_cas_and_separate_prefe
     db = Recorder(execute=1, fetchall=[])
     repo = Repository(db)
     assert await repo.queue_image_rerun(
-        TASK, 1, ImagePreferences(image_action="generate")
+        TASK, 1, ImagePreferences(image_action="generate", authorized_media=True)
     )
     sql, args = db.named("execute")[0][0]
     assert (
         "tg_user_id=%s" in sql and "status IN (%s,%s)" in sql and "images_only" in sql
+        and "$.media_edit_rights_confirmed" in sql
     )
+    assert args[4] is True
     assert "draft_text=" not in sql and "draft_meta=" not in sql
     assert args[-2:] == ("draft_ready", "needs_review")
     await repo.get_settings()

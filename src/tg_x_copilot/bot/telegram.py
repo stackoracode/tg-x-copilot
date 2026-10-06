@@ -339,7 +339,8 @@ class TelegramBot:
             lines += [f"🔎 {esc(r)}" for r in review]
         else:
             lines.append(tr("draft_header", task_id=task_id, score=task.get("score"),
-                                length=meta.get("x_length", "?")))
+                                length=meta.get("x_length", "?"),
+                                limit=app.config.current.pipeline.max_post_chars))
         jev = task.get("jev_result")
         if jev and isinstance(jev, dict) and jev.get("route"):
             val = jev.get("value")

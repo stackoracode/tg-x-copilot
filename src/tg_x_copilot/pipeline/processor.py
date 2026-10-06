@@ -204,8 +204,11 @@ class Pipeline:
 
         await repo.set_stage(task_id, "rewrite")
         knowledge = prompts.render_json("knowledge", locale.code)
-        rules = XRules.from_db({**knowledge["rules"],
-                               **await repo.get_rules(env.locale, env.market)})
+        rules_dict = {**knowledge["rules"],
+                      **await repo.get_rules(env.locale, env.market)}
+        if cfg.pipeline.max_post_chars:
+            rules_dict["max_chars"] = cfg.pipeline.max_post_chars
+        rules = XRules.from_db(rules_dict)
         hooks = await repo.get_hooks(env.locale, env.market) or knowledge["hooks"]
         rewrite, report = await self._rewrite(task_id, env, evaluation, analyses, rules, hooks,
                                               locale, cfg)
@@ -413,7 +416,7 @@ class Pipeline:
                 warnings.append(t(env.locale, "media_duplicate", idx=idx, task_id=prev["task_id"][:8],
                                   status=label(env.locale, prev["status"])))
                 break
-            if env.media_edit_rights_confirmed:
+            if env.media_edit_rights_confirmed or (cfg.pipeline.direct_uploads_owned and sm.forwarded is False):
                 authorization = ImageEditAuthorization(task_id=task_id, image_idx=idx,
                     source_sha256=blob.sha256, user_id=env.user_id)
                 await repo.save_image_edit_authorization(task_id, authorization)
@@ -816,8 +819,11 @@ class Pipeline:
                 not packet_is_traceable(packet, env.text, sources)):
                 # Fresh facts may use persisted source OCR, never old editorial background.
                 packet, fact_warnings = await self._fact_packet(task_id, env, {**sources, **analyses})
-            rules = XRules.from_db({**prompts.render_json("knowledge", locale.code)["rules"],
-                                   **await self.app.repo.get_rules(env.locale, env.market)})
+            rules_dict = {**prompts.render_json("knowledge", locale.code)["rules"],
+                          **await self.app.repo.get_rules(env.locale, env.market)}
+            if cfg.pipeline.max_post_chars:
+                rules_dict["max_chars"] = cfg.pipeline.max_post_chars
+            rules = XRules.from_db(rules_dict)
             rewrite = RewriteResult(post=task["draft_text"], hook=meta.get("hook") or "",
                                     image_brief="")
             execution_analyses = (analyses if wants_region_edit(env.image_action, env.image_options)

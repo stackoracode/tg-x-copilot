@@ -75,3 +75,19 @@ def test_numbers_backed_only_by_llm_facts_require_review():
                            unverified_facts=["Revenue reached $3.4 billion"])
     assert report.ok
     assert any("3.4" in item for item in report.review)
+
+
+def test_long_post_allowed_with_higher_max_chars():
+    long_post = "Revenue up 12% in Q2. " + ("A" * 400)
+    report_standard = check_rewrite(_r(long_post), source_text=SOURCE, rules=RULES,
+                                    verified_facts=["Q2"])
+    assert not report_standard.ok
+    assert any("limit is" in p for p in report_standard.problems)
+
+    premium_rules = XRules(max_chars=25000, max_hashtags=1, max_emojis=2,
+                           banned_phrases=("you won't believe", "shocking"))
+    report_premium = check_rewrite(_r(long_post), source_text=SOURCE, rules=premium_rules,
+                                   verified_facts=["Q2"])
+    assert report_premium.ok
+
+
