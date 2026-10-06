@@ -94,6 +94,74 @@ class TelegramBot:
             kwargs["reply_to"] = reply_to
         await self.client.send_message(chat_id, text[:_MAX_MSG], **kwargs)
 
+    async def _format_progress(self, task: dict[str, Any], step: str) -> str:
+        task_id = task["id"]
+        locale = task.get("locale", self.app.config.current.default_locale)
+        key = "task_progress_" + step
+        header = self.app.i18n.t(locale, key, task_id=task_id[:8])
+        lines = [header]
+
+        jev = task.get("jev_result")
+        if jev and isinstance(jev, dict) and jev.get("route"):
+            route = label(locale, str(jev.get("route") or ""))
+            val = jev.get("value")
+            val_str = f"{val:.2f}" if isinstance(val, (int, float)) else str(val or "0.00")
+            conf = jev.get("confidence") or "-"
+            if locale == "zh-CN":
+                lines.append(f"⚖️ Jev 初筛: {route}（分值: {val_str}，置信度: {conf}）")
+            else:
+                lines.append(f"⚖️ Jev triage: {route} (score: {val_str}, conf: {conf})")
+
+        ev = task.get("evaluation")
+        if ev and isinstance(ev, dict) and "suitable" in ev:
+            val = ev.get("value_score")
+            val_str = f"{val:.2f}" if isinstance(val, (int, float)) else str(val or "0.00")
+            suitable_str = "适合" if ev.get("suitable") else "需审核" if locale == "zh-CN" else ("yes" if ev.get("suitable") else "no")
+            if locale == "zh-CN":
+                lines.append(f"📊 主模型评估: {suitable_str}（价值评分: {val_str}）")
+            else:
+                lines.append(f"📊 Evaluation: {suitable_str} (value: {val_str})")
+
+        try:
+            events = await self.app.repo.list_events(task_id)
+            if events:
+                step_names_zh = {
+                    "start": "开始", "clean": "清理", "triage": "初筛", "media": "媒体",
+                    "vision": "视觉", "evaluate": "评估", "rewrite": "重写",
+                    "IMAGE2": "生图", "IMAGE_QC": "质检", "IMAGE_POLICY": "策略",
+                    "images": "图流", "R2_UPLOAD": "上传", "persist": "保存", "done": "完成"
+                }
+                step_names_en = {
+                    "start": "Start", "clean": "Clean", "triage": "Triage", "media": "Media",
+                    "vision": "Vision", "evaluate": "Eval", "rewrite": "Draft",
+                    "IMAGE2": "Image", "IMAGE_QC": "QC", "IMAGE_POLICY": "Policy",
+                    "images": "Images", "R2_UPLOAD": "Upload", "persist": "Persist", "done": "Done"
+                }
+                step_map = step_names_zh if locale == "zh-CN" else step_names_en
+                lines.append("")
+                for e in events[-4:]:
+                    created = e.get("created_at")
+                    if hasattr(created, "strftime"):
+                        t_str = created.strftime("%H:%M:%S")
+                    elif created:
+                        t_str = str(created)[11:19]
+                    else:
+                        t_str = "--:--:--"
+                    s_code = e.get("step") or ""
+                    s_label = step_map.get(s_code, s_code[:4])
+                    lvl = e.get("level") or "info"
+                    if locale == "zh-CN":
+                        lvl_badge = "告警" if lvl == "warning" else ("错误" if lvl in ("error", "critical") else "信息")
+                    else:
+                        lvl_badge = "WARN" if lvl == "warning" else ("ERR" if lvl in ("error", "critical") else "INFO")
+                    msg = (e.get("message") or "").replace("\n", " ").strip()
+                    if len(msg) > 38:
+                        msg = msg[:35] + "..."
+                    lines.append(f"<code>{t_str}</code> [{s_label}] {lvl_badge}: {esc(msg)}")
+        except Exception:
+            pass
+        return "\n".join(lines)
+
     async def update_task_status(self, task_id: str, step: str, *, text: str | None = None,
                                  buttons: Any = None, reply_to: int | None = None) -> None:
         try:
@@ -106,8 +174,7 @@ class TelegramBot:
         envelope = task.get("envelope") or {}
         status_id = envelope.get("status_message_id")
         if text is None:
-            key = "task_progress_" + step
-            text = self.app.i18n.t(task["locale"], key, task_id=task_id[:8])
+            text = await self._format_progress(task, step)
         if not status_id:
             # Pre-existing tasks retain their review-card delivery behavior.
             if text and step == "final":
@@ -273,6 +340,24 @@ class TelegramBot:
         else:
             lines.append(tr("draft_header", task_id=task_id, score=task.get("score"),
                                 length=meta.get("x_length", "?")))
+        jev = task.get("jev_result")
+        if jev and isinstance(jev, dict) and jev.get("route"):
+            val = jev.get("value")
+            val_str = f"{val:.2f}" if isinstance(val, (int, float)) else str(val or "0.00")
+            conf = jev.get("confidence") or "-"
+            route_str = label(locale, str(jev.get("route") or ""))
+            if locale == "zh-CN":
+                lines.append(f"⚖️ Jev 初筛: {route_str}（评分: {val_str}，置信度: {conf}）")
+            else:
+                lines.append(f"⚖️ Jev triage: {route_str} (score: {val_str}, conf: {conf})")
+        ev = task.get("evaluation")
+        if ev and isinstance(ev, dict) and "suitable" in ev:
+            val = ev.get("value_score")
+            val_str = f"{val:.2f}" if isinstance(val, (int, float)) else str(val or "0.00")
+            if locale == "zh-CN":
+                lines.append(f"📊 评估: 价值 {val_str}" + (f"（{esc(ev.get('angle'))}）" if ev.get("angle") else ""))
+            else:
+                lines.append(f"📊 Evaluation: value {val_str}" + (f" ({esc(ev.get('angle'))})" if ev.get("angle") else ""))
         for w in meta.get("warnings") or []:
             lines.append(f"⚠️ {esc(w)}")
         if media:

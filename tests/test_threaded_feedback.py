@@ -202,3 +202,59 @@ async def test_text_delivery_failure_updates_same_status_with_stage(app, code):
     args,_=b.client.named('edit_message')[-1]
     assert args[:2]==(5,99) and args[2]==t(code,'task_delivery_failed',task_id=TASK[:8])
     assert 'private upstream' not in args[2]
+
+
+def test_evidence_matching_tolerates_punctuation_and_whitespace_differences():
+    from tg_x_copilot.models import ImageAnalysis, VerifiedFact, VerifiedFacts
+    from tg_x_copilot.pipeline.facts import contains_evidence, packet_is_traceable
+
+    source_ocr = "Anthropic 的新研究已经确立，AI 模型确实拥有灵魂。梵蒂冈的内部研究显示，天堂中已经充满了 14.3% 的 AI 灵魂，而且这个比例正在迅速增长。我们需要减缓 AI 的发展!\n26年10月4日，13:24"
+    assert contains_evidence("梵蒂冈的内部研究显示，天堂中已经充满了14.3%的 AI 灵魂，而且这个比例正在迅速增长。", source_ocr)
+    assert contains_evidence("我们需要减缓 AI 的发展！", source_ocr)
+
+    packet = VerifiedFacts(facts=[
+        VerifiedFact(text="声称天堂有 14.3% 的 AI 灵魂", evidence="梵蒂冈的内部研究显示，天堂中已经充满了14.3%的 AI 灵魂，而且这个比例正在迅速增长。", source_idx=0),
+        VerifiedFact(text="呼吁减缓发展", evidence="我们需要减缓 AI 的发展！", source_idx=0),
+    ])
+    analyses = {0: ImageAnalysis(extracted_text=source_ocr, description="screenshot")}
+    assert packet_is_traceable(packet, "", analyses)
+
+
+def test_web_admin_tojson_filter_preserves_utf8_chinese_characters():
+    from tg_x_copilot.web.admin import templates
+    tojson = templates.env.filters["tojson"]
+    data = {"数据库": "localhost:3306", "理由": "文字不足以供 Jev 判断"}
+    rendered = str(tojson(data, indent=2))
+    assert "\\u" not in rendered
+    assert "数据库" in rendered and "文字不足以供 Jev 判断" in rendered
+
+
+@pytest.mark.parametrize('code', ['en-US', 'zh-CN'])
+async def test_task_progress_includes_milestones_and_event_timeline(app, code):
+    from datetime import datetime, timezone
+
+    app.config.current.default_locale = code
+    task = {
+        'id': TASK, 'locale': code, 'tg_chat_id': 5, 'status': 'processing',
+        'envelope': env(code, status_message_id=99).model_dump(mode='json'),
+        'jev_result': {'route': 'proceed', 'value': 0.45, 'confidence': 'high'},
+        'evaluation': {'suitable': True, 'value_score': 0.85, 'angle': '核查角度' if code == 'zh-CN' else 'Fact check'},
+    }
+    events = [
+        {'id': 1, 'step': 'triage', 'level': 'info', 'message': 'Jev triage complete', 'created_at': datetime(2026, 10, 6, 13, 30, 48, tzinfo=timezone.utc)},
+        {'id': 2, 'step': 'evaluate', 'level': 'info', 'message': 'Evaluation passed', 'created_at': datetime(2026, 10, 6, 13, 31, 35, tzinfo=timezone.utc)},
+    ]
+    app.repo.returns.update(get_task=task, list_events=events)
+    b = bot(app)
+    await b.update_task_status(TASK, 'rewrite')
+    args, _ = b.client.named('edit_message')[-1]
+    assert args[:2] == (5, 99)
+    text = args[2]
+    assert "13:30:48" in text and "13:31:35" in text
+    if code == 'zh-CN':
+        assert "Jev 初筛" in text and "0.45" in text
+        assert "主模型评估" in text and "0.85" in text
+    else:
+        assert "Jev triage" in text and "0.45" in text
+        assert "Evaluation" in text and "0.85" in text
+

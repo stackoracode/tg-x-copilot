@@ -3,12 +3,38 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 
 from .. import prompts
 from ..models import FactVerification, ImageAnalysis, InputEnvelope, VerifiedFacts
 from .guards import numbers_in
 from .image_content import editorial_evidence
 from .language import is_localized
+
+
+def contains_evidence(evidence: str, source: str) -> bool:
+    """Check if evidence text is grounded in source, tolerating minor punctuation/spacing variants."""
+    stripped = evidence.strip()
+    if not stripped:
+        return False
+    if stripped in source:
+        return True
+
+    def norm(t: str) -> str:
+        t = unicodedata.normalize("NFKC", t)
+        t = re.sub(r"[!！]", "!", t)
+        t = re.sub(r"[,，]", ",", t)
+        t = re.sub(r"[:：]", ":", t)
+        t = re.sub(r"[?？]", "?", t)
+        t = re.sub(r"[;；]", ";", t)
+        t = re.sub(r"[\'\"‘’“”]", "\"", t)
+        t = re.sub(r"\s+", " ", t).strip()
+        t = re.sub(r"(?<=[\u4e00-\u9fff])\s+", "", t)
+        t = re.sub(r"\s+(?=[\u4e00-\u9fff])", "", t)
+        return t
+
+    return norm(stripped) in norm(source)
 
 
 async def build_verified_facts(
@@ -45,7 +71,7 @@ async def build_verified_facts(
             if fact.source_idx is None
             else sources["images"].get(str(fact.source_idx), "")
         )
-        if not fact.evidence.strip() or fact.evidence not in source:
+        if not contains_evidence(fact.evidence, source):
             raise ValueError("fact evidence not found in source")
         if numbers_in(fact.text) - numbers_in(fact.evidence):
             raise ValueError("fact packet invented numbers")
@@ -84,7 +110,7 @@ def packet_is_traceable(
                 else ""
             )
         )
-        if not fact.evidence.strip() or fact.evidence not in source:
+        if not contains_evidence(fact.evidence, source):
             return False
         if numbers_in(fact.text) - numbers_in(fact.evidence):
             return False
