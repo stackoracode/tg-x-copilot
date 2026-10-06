@@ -21,7 +21,9 @@ You forward posts to the bot: text, photos, captions, albums, or several posts a
    practical background. Made-up facts, clickbait, and translate-and-repost are blocked by
    deterministic guards.
 3. **Images** are kept, enhanced, localized, recreated as original visuals, or flagged for review.
-   Third-party watermarks are never removed, and third-party files are never reposted.
+   Source/copyright marks and author/photographer credits are protected. Explicitly requested
+   channel-promotion cleanup requires confirmed editing rights and carefully bounded regions;
+   third-party files are never reposted.
    Every output from the image model must pass a **visual QC check** before it is used. QC
    compares language, text, numbers, dates, names, brands/logos, people, watermarks, and facts. A failed check sends
    the image to review.
@@ -31,7 +33,8 @@ You forward posts to the bot: text, photos, captions, albums, or several posts a
 **Storage is built for the R2 free tier.** Incoming media stays in memory only. Nothing is
 stored for skipped or rejected content. Only final assets for pending drafts are uploaded.
 Review copies are optional and off by default. Assets are freed on approval unless retention
-is enabled. Uploads are compressed and keyed by content hash, so duplicates are stored once.
+is enabled. Uploads are optimized and keyed by content hash, so duplicates are stored once. Minimal
+promotion cleanup uses lossless source-sized PNGs to preserve all pixels outside the approved regions.
 
 **Media is never fatal.** If Telegram downloads, the image model, QC, or R2 fail, the
 affected image is marked REVIEW with the reason. The text draft is still delivered.
@@ -41,7 +44,8 @@ threads), Cloudflare R2 (async SigV4, Standard storage), a CPA proxy, TypeSafe J
 Image2-compatible image models.
 
 See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for the data flow, Jev routing, storage
-policy, concurrency, and content rules.
+policy, concurrency, and content rules. See [image delivery diagnostics](docs/IMAGE_DELIVERY.md)
+for scoped promotion cleanup and attachment failure stages.
 
 ```
 Telegram ─▶ Bot (1 msg or 1 album) ─▶ normalize ─▶ MySQL + Queue ─▶ Workers (atomic claim)

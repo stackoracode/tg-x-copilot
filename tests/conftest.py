@@ -20,7 +20,10 @@ class Recorder:
 
     def __init__(self, **returns: Any) -> None:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
-        self.returns = {"previous_uses": [], "list_media": [], **returns}
+        self.returns = {"previous_uses": [], "list_media": [],
+                        "send_file": lambda chat, files, **kw: [
+                            SimpleNamespace(photo=object(), id=idx+1) for idx, _ in enumerate(files)],
+                        **returns}
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("__"):
