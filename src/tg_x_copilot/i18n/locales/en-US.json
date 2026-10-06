@@ -317,6 +317,27 @@
     "check_identifiers": "product/model/protocol identifiers",
     "check_readability": "mobile readability",
     "check_density": "information density",
-    "image_source_required": "This action needs a source image; choose Generate or Information card for text-only tasks."
-  }
+    "image_source_required": "This action needs a source image; choose Generate or Information card for text-only tasks.",
+    "cleanup_rights_required": "Targeted removal needs confirmed editing rights; no source editing was performed.",
+    "cleanup_scope_required": "No safe, explicitly selected promotion region is available; copyright/author/unknown marks must stay.",
+    "cleanup_no_promotion": "No promotion overlay detected; original image kept unchanged.",
+    "cleanup_authorized": "Authorized local promotion cleanup; all original content outside selected regions is preserved.",
+    "cleanup_pixel_failure": "The result changed pixels or dimensions outside the permitted region.",
+    "check_protected_marks": "source/copyright marks",
+    "check_promotion_removal": "specified promotion removal",
+    "check_outside_regions": "unchanged original content outside regions",
+    "media_stage_failure": "Image #{idx} — [{stage}] {reason}",
+    "media_stage_image2": "Image2 did not produce a valid processed image.",
+    "media_stage_missing_asset": "No final asset is attached to this image.",
+    "media_stage_fetch": "The final image could not be read from R2 or is not a valid image.",
+    "media_stage_send": "Telegram did not confirm a photo attachment for this image.",
+    "media_delivery_sent": "Image #{idx}: photo attachment sent.",
+    "media_delivery_omitted": "Image #{idx}: intentionally omitted.",
+    "media_delivery_review": "Image #{idx}: not sent; review required.",
+    "cleanup_regions": "Promotion regions",
+    "cleanup_regions_help": "Only identified promotion regions can be selected. An empty selection means all clearly identified safe promotion regions; protected attribution is never removable.",
+    "cleanup_region_label": "Image {idx} / region {region}",
+    "cleanup_task_required": "Open Image Tools from a task to select specific regions."
+  },
+  "image_rights_required": "Keeping or enhancing this source requires confirmed editing rights."
 }

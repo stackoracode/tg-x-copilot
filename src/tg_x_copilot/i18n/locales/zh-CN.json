@@ -317,6 +317,27 @@
     "check_identifiers": "产品/型号/协议标识",
     "check_readability": "移动端可读性",
     "check_density": "信息密度",
-    "image_source_required": "此操作需要源图片；纯文本任务请选择生成或信息卡片。"
-  }
+    "image_source_required": "此操作需要源图片；纯文本任务请选择生成或信息卡片。",
+    "cleanup_rights_required": "局部清除需要确认素材编辑权限，未对原图执行编辑。",
+    "cleanup_scope_required": "没有可安全处理的明确推广区域；版权、作者署名和不确定标识必须保留。",
+    "cleanup_no_promotion": "未检测到推广叠加层，原图保持不变。",
+    "cleanup_authorized": "已授权局部清除推广层，选定区域外的原始内容保持不变。",
+    "cleanup_pixel_failure": "结果改变了许可区域外的像素或原始尺寸。",
+    "check_protected_marks": "来源/版权标识",
+    "check_promotion_removal": "指定推广区域清除",
+    "check_outside_regions": "区域外原始内容保持不变",
+    "media_stage_failure": "图片 #{idx} — [{stage}] {reason}",
+    "media_stage_image2": "Image2 未产出有效的处理图片。",
+    "media_stage_missing_asset": "此图片未关联可发送的最终素材。",
+    "media_stage_fetch": "无法从 R2 读取最终图片，或读取内容不是有效图片。",
+    "media_stage_send": "Telegram 未确认此图片作为照片附件发送成功。",
+    "media_delivery_sent": "图片 #{idx}：照片附件已发送。",
+    "media_delivery_omitted": "图片 #{idx}：按所选操作忽略。",
+    "media_delivery_review": "图片 #{idx}：未发送，需要审核。",
+    "cleanup_regions": "推广区域",
+    "cleanup_regions_help": "仅可选择已识别的推广区域；未指定区域时仅处理全部明确且安全的推广区域，来源署名和版权标识不可移除。",
+    "cleanup_region_label": "图片 {idx} / 区域 {region}",
+    "cleanup_task_required": "请从任务草稿的图像工具选择具体区域。"
+  },
+  "image_rights_required": "保留或增强此原图需要确认编辑授权。"
 }

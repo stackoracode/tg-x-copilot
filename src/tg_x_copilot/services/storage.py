@@ -27,6 +27,10 @@ def asset_key(blob: ImageBlob) -> str:
     return f"assets/{blob.sha256[:2]}/{blob.sha256}.{blob.ext}"
 
 
+class AssetAttachmentError(Exception):
+    pass
+
+
 class AssetStore:
     def __init__(self, app: "AppContext") -> None:
         self.app = app
@@ -47,8 +51,17 @@ class AssetStore:
             log.info("asset stored", extra=ctx(key=key, bytes=blob.size, kind=kind))
         else:
             log.info("asset deduplicated", extra=ctx(key=key, kind=kind))
-        await repo.set_media_asset(task_id, idx, key=key, kind=kind, size=blob.size,
-                                   mime=blob.mime)
+        attached = await repo.set_media_asset(task_id, idx, key=key, kind=kind, size=blob.size,
+                                               mime=blob.mime)
+        if attached is not True:
+            # An uploaded object without a task_media pointer cannot reach draft delivery.
+            if not await repo.asset_key_referenced(key):
+                try:
+                    async with self.app.limits.io:
+                        await r2.delete_object(key)
+                except Exception:
+                    log.exception("orphan cleanup failed after asset attachment failure")
+            raise AssetAttachmentError("final asset could not be attached to its media row")
         return key
 
     async def release_task(self, task_id: str, kinds: tuple[str, ...] = ("final", "review")

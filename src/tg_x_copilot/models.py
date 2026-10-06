@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .image_settings import ImageAction, ImageOptions
 
@@ -123,6 +123,32 @@ class TriageResult(BaseModel):
                 + (" (escalated: Jev uncertain)" if self.escalated else ""))
 
 
+class MediaFailureStage(StrEnum):
+    IMAGE_POLICY = "IMAGE_POLICY"
+    IMAGE2 = "IMAGE2"
+    QC = "QC"
+    R2_UPLOAD = "R2_UPLOAD"
+    R2_FETCH = "R2_FETCH"
+    TELEGRAM_SEND = "TELEGRAM_SEND"
+
+
+class MarkRegion(BaseModel):
+    id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,16}$")
+    text: str = ""
+    kind: Literal["promotion", "copyright", "author", "photographer", "media_rights", "unknown"]
+    # Normalized display coordinates (EXIF-corrected image), not publishing facts.
+    box: tuple[float, float, float, float]
+    confidence: float = Field(default=0, ge=0, le=1)
+    safe_to_remove: bool = False  # no subject/UI/meaningful text beneath or inside the region
+
+    @model_validator(mode="after")
+    def valid_box(self):
+        left, top, right, bottom = self.box
+        if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
+            raise ValueError("invalid mark region coordinates")
+        return self
+
+
 class ImageAnalysis(BaseModel):
     description: str
     layout_description: str = ""  # information hierarchy, never factual evidence
@@ -135,6 +161,8 @@ class ImageAnalysis(BaseModel):
     has_third_party_watermark: bool = False
     watermark_text: str | None = None
     has_channel_overlay: bool = False
+    has_source_copyright_mark: bool | None = None  # unknown for old analysis
+    mark_regions: list[MarkRegion] = Field(default_factory=list)
     brand_names: list[str] = Field(default_factory=list)
     source_facts: list[str] = Field(default_factory=list)
     contains_text: bool = False
@@ -196,7 +224,10 @@ class ImageQC(BaseModel):
     brands_consistent: bool = False  # logos/brands verified against source
     names_consistent: bool  # product, brand, organization and place names
     people_consistent: bool  # no people added/removed/altered; no real-person likeness
-    watermarks_ok: bool  # no watermark/logo added, and none removed
+    watermarks_ok: bool  # no unauthorized removal; explicitly permitted promotion removal is OK
+    protected_marks_preserved: bool = False
+    promotion_removal_valid: bool = False
+    outside_regions_unchanged: bool = False
     facts_consistent: bool  # nothing contradicts the source facts
     identifiers_consistent: bool = False
     readability_ok: bool = False
@@ -210,6 +241,7 @@ class MediaResult(BaseModel):
     idx: int
     decision: ImageDecision | ImageAction
     reason: str
+    failure_stage: MediaFailureStage | None = None
     asset_key: str | None = None  # R2 key, only when something was persisted
     asset_kind: Literal["final", "review"] | None = None
     ai_generated: bool = False

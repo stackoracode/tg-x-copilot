@@ -89,6 +89,7 @@ DEFAULT_OPTIONS = frozenset(
 class ImageOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")
     flags: frozenset[ImageOption] = DEFAULT_OPTIONS
+    promotion_targets: frozenset[str] = frozenset()  # source-index.region-id; empty = all known safe promotion regions
     information_density: InformationDensity = InformationDensity.MEDIUM
     target_locale: Literal["en-US", "zh-CN"] | None = (
         None  # follow task language by default
@@ -96,6 +97,9 @@ class ImageOptions(BaseModel):
 
     @model_validator(mode="after")
     def consistent(self) -> ImageOptions:
+        import re
+        if any(not re.fullmatch(r"[0-9]{1,3}\.[a-zA-Z0-9_-]{1,16}", key) for key in self.promotion_targets):
+            raise ValueError("invalid promotion region selection")
         for flag in self.flags:
             if OPTION_CONFLICTS.get(flag, frozenset()) & self.flags:
                 raise ValueError("conflicting image options")

@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any
 from telethon import Button, TelegramClient, events
 
 from ..i18n import label
+from ..models import MediaFailureStage, TaskStatus
+from ..pipeline.media import inspect_image
 from .image_tools import ImageTools
 from ..logging_setup import ctx
 
@@ -102,36 +104,80 @@ class TelegramBot:
         meta = task.get("draft_meta") or {}
         media = await app.repo.list_media(task_id)
 
-        # Images are best-effort: an R2 or Telegram media failure never blocks the text draft.
-        files: list[io.BytesIO] = []
-        unavailable: list[int] = []
+        # Delivery is a separate, recorded step; processing/QC success alone is not delivery.
+        files: list[tuple[int, io.BytesIO]] = []
+        delivery: dict[str, dict[str, Any]] = {}
+        failures: dict[int, tuple[MediaFailureStage, str]] = {}
+        pipeline_meta = {entry["idx"]: entry for entry in meta.get("media") or []}
+
+        def fail(idx: int, stage: MediaFailureStage, reason: str) -> None:
+            failures[idx] = (stage, reason)
+            delivery[str(idx)] = {"sent": False, "failure_stage": stage.value, "reason": reason}
+
         for m in media:
-            if m.get("asset_key") and m.get("asset_kind") == "final":
-                try:
-                    async with app.limits.io:
-                        data = await app.hub.r2.get_object(m["asset_key"])
-                except Exception:
-                    log.warning("asset fetch failed; sending draft without it",
-                                extra=ctx(task_id=task_id, idx=m["idx"]))
-                    unavailable.append(m["idx"])
-                    continue
+            idx = m["idx"]
+            if m.get("decision") in ("omit", "text_only"):
+                delivery[str(idx)] = {"sent": False, "omitted": True}
+                continue
+            if (m.get("decision") == "review" or pipeline_meta.get(idx, {}).get("failure_stage")
+                    or not m.get("asset_key") or m.get("asset_kind") != "final"):
+                reason = m.get("decision_reason") or tr("media_stage_missing_asset")
+                stored_stage = pipeline_meta.get(idx, {}).get("failure_stage")
+                if not stored_stage:
+                    stored_stage = next((stage.value for stage in MediaFailureStage
+                                         if reason.startswith(f"[{stage.value}]")), None)
+                if not stored_stage:  # Old tasks did not record typed stage diagnostics.
+                    stored_stage = ("QC" if m.get("ai_generated") and m.get("decision") == "review"
+                                    else "R2_UPLOAD" if m.get("decision") != "review" else "IMAGE_POLICY")
+                fail(idx, MediaFailureStage(stored_stage), reason)
+                continue
+            try:
+                async with app.limits.io:
+                    data = await app.hub.r2.get_object(m["asset_key"])
+                blob = inspect_image(data)
+                if blob is None:
+                    raise ValueError("R2 final asset is not a readable image")
                 bio = io.BytesIO(data)
-                bio.name = f"{task_id[:8]}-{m['idx']}{Path(m['asset_key']).suffix}"
-                files.append(bio)
+                # Name + force_document=False causes Telethon to construct photo media, not
+                # a URL/path message or anonymous application/octet-stream document.
+                bio.name = f"{task_id[:8]}-{idx}.{blob.ext}"
+                files.append((idx, bio))
+            except Exception:
+                log.exception("R2 final asset fetch failed", extra=ctx(task_id=task_id, idx=idx))
+                fail(idx, MediaFailureStage.R2_FETCH, tr("media_stage_fetch"))
+
         for offset in range(0, len(files), 10):
             batch = files[offset:offset + 10]
             try:
-                await self.client.send_file(chat_id, batch)
+                sent = await self.client.send_file(chat_id, [bio for _, bio in batch], force_document=False)
+                messages = sent if isinstance(sent, (list, tuple)) else [sent]
+                for pos, (idx, _) in enumerate(batch):
+                    message = messages[pos] if pos < len(messages) else None
+                    if message is None or getattr(message, "photo", None) is None:
+                        fail(idx, MediaFailureStage.TELEGRAM_SEND, tr("media_stage_send"))
+                    else:
+                        delivery[str(idx)] = {"sent": True, "message_id": getattr(message, "id", None)}
             except Exception:
-                log.warning("sending images failed; sending draft text anyway",
-                            extra=ctx(task_id=task_id))
-                unavailable += [int(f.name.split("-")[-1].split(".")[0]) for f in batch]
+                log.exception("Telegram photo send failed", extra=ctx(task_id=task_id))
+                for idx, _ in batch:
+                    fail(idx, MediaFailureStage.TELEGRAM_SEND, tr("media_stage_send"))
         files.clear()
+        for idx, (stage, reason) in failures.items():
+            try:
+                await app.repo.add_event(task_id, stage.value, f"image {idx}: {reason}", level="warning")
+            except Exception:
+                log.exception("could not record image delivery failure")
+        if delivery:
+            status = TaskStatus.NEEDS_REVIEW if failures or meta.get("problems") or meta.get("review") else TaskStatus.DRAFT_READY
+            try:
+                await app.repo.record_media_delivery(task_id, delivery, status)
+            except Exception:
+                log.exception("could not persist image delivery receipt")
 
         lines: list[str] = []
         problems = meta.get("problems") or []
         review = meta.get("review") or []
-        if task["status"] == "needs_review":
+        if task["status"] == "needs_review" or failures:
             lines.append(tr("review_header", task_id=task_id))
             lines += [f"⛔ {esc(p)}" for p in problems]
             lines += [f"🔎 {esc(r)}" for r in review]
@@ -142,24 +188,31 @@ class TelegramBot:
             lines.append(f"⚠️ {esc(w)}")
         if media:
             summary = ", ".join(
-                f"#{m['idx']} {_DECISION_ICON.get(m.get('decision') or '', '?')}"
-                f"{label(locale, m.get('decision') or '-')}" for m in media
+                f"#{m['idx']} {'❌' if m['idx'] in failures else _DECISION_ICON.get(m.get('decision') or '', '?')}"
+                f"{label(locale, 'review' if m['idx'] in failures else m.get('decision') or '-')}" for m in media
             )
             lines.append(tr("media_summary", summary=esc(summary)))
             for m in media:
-                if m.get("decision") == "review":
-                    lines.append(f"  #{m['idx']}: {esc(m.get('decision_reason') or '')}")
+                idx = m["idx"]
+                if idx in failures:
+                    stage, reason = failures[idx]
+                    lines.append(tr("media_stage_failure", idx=idx, stage=stage.value, reason=esc(reason)))
+                elif delivery.get(str(idx), {}).get("sent"):
+                    lines.append(tr("media_delivery_sent", idx=idx))
+                elif delivery.get(str(idx), {}).get("omitted"):
+                    lines.append(tr("media_delivery_omitted", idx=idx))
             if any(m.get("ai_generated") for m in media):
                 lines.append(tr("ai_label"))
+        unavailable = [idx for idx, (stage, _) in failures.items()
+                       if stage in (MediaFailureStage.R2_FETCH, MediaFailureStage.TELEGRAM_SEND)]
         if unavailable:
-            lines.append(tr("media_unavailable",
-                                items=", ".join(f"#{i}" for i in sorted(set(unavailable)))))
+            lines.append(tr("media_unavailable", items=", ".join(f"#{i}" for i in sorted(unavailable))))
         lines.append(tr("draft_text_follows"))
 
         buttons = []
-        if task["status"] == "draft_ready":
+        if task["status"] == "draft_ready" and not failures:
             buttons.append(Button.inline(tr("btn_approve"), f"t:a:{task_id}".encode()))
-        elif task["status"] == "needs_review" and not problems:
+        elif (task["status"] == "needs_review" or failures) and not problems:
             buttons.append(Button.inline(tr("btn_approve_reviewed"),
                                          f"t:a:{task_id}".encode()))
         buttons += [Button.inline(tr("btn_regenerate"), f"t:g:{task_id}".encode()),

@@ -182,12 +182,18 @@ class Repository:
         )
 
     async def set_media_asset(self, task_id: str, idx: int, *, key: str, kind: str, size: int,
-                              mime: str) -> None:
-        await self.db.execute(
+                              mime: str) -> bool:
+        n = await self.db.execute(
             "UPDATE task_media SET asset_key=%s, asset_kind=%s, asset_size=%s, asset_mime=%s"
             " WHERE task_id=%s AND idx=%s",
             (key, kind, size, mime, task_id, idx),
         )
+        if n == 1:
+            return True
+        # MySQL may report 0 for an idempotent update. Distinguish that from a missing row.
+        row = await self.db.fetchone("SELECT asset_key, asset_kind FROM task_media WHERE task_id=%s AND idx=%s",
+                                     (task_id, idx))
+        return bool(row and row["asset_key"] == key and row["asset_kind"] == kind)
 
     async def clear_media_asset(self, task_id: str, idx: int) -> None:
         await self.db.execute(
@@ -331,3 +337,12 @@ class Repository:
             "UPDATE tasks SET envelope=JSON_SET(envelope, '$.image_action', %s,"
             " '$.image_options', JSON_EXTRACT(%s, '$')) WHERE id=%s",
             (prefs.image_action.value if prefs.image_action else None, _dumps(prefs.image_options), task_id))
+
+    async def record_media_delivery(self, task_id: str, delivery: dict[str, Any],
+                                    status: TaskStatus) -> None:
+        # Preserve the immutable draft and processing diagnostics; don't mutate terminal tasks
+        # or overwrite a newly queued image job with an old delivery attempt.
+        await self.db.execute(
+            "UPDATE tasks SET draft_meta=JSON_SET(COALESCE(draft_meta, JSON_OBJECT()),"
+            " '$.delivery', JSON_EXTRACT(%s, '$')), status=%s WHERE id=%s AND status IN (%s,%s)",
+            (_dumps(delivery), status.value, task_id, TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value))

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -27,7 +28,7 @@ from ..logging_setup import ctx as log_ctx
 from ..logging_setup import mask
 from ..models import (
     Evaluation, ImageAnalysis, ImageDecision, ImageQC, InputEnvelope, MediaKind,
-    MediaResult, RewriteResult, SourceMedia, TaskStatus, TriageResult, VerifiedFacts,
+    MediaResult, RewriteResult, SourceMedia, TaskStatus, TriageResult, VerifiedFacts, MediaFailureStage, MarkRegion,
 )
 from ..services.storage import StorageBudgetExceeded
 from .cleaning import clean_bundle
@@ -35,6 +36,8 @@ from .guards import GuardReport, XRules, check_rewrite, x_length
 from .language import is_localized
 from .image_policy import plan, media_is_owned
 from .facts import build_verified_facts, packet_is_traceable
+from .overlays import (approved_regions, wants_region_edit, crop_region, composite_patches,
+                       unchanged_outside, validate_pixel_scope)
 from .image_qc import QCMode, build_messages, qc_verdict
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
@@ -63,6 +66,7 @@ class ImageOutcome:
     output: ImageBlob | None = None  # optimized final asset (keep/enhance/regenerate)
     ai_generated: bool = False
     review_blob: ImageBlob | None = None  # e.g. an Image2 output that failed QC
+    failure_stage: MediaFailureStage | None = None
 
 
 class Pipeline:
@@ -153,7 +157,10 @@ class Pipeline:
 
         # 2. Media, in memory only.
         await repo.set_stage(task_id, "media")
-        images, dup_warnings = await self._load_media(task_id, env, cfg, use=triage.use_media)
+        explicit_image_request = (env.image_action is not None and
+            ACTIONS[env.image_action].execution != "omit") or wants_region_edit(env.image_action, env.image_options)
+        images, dup_warnings = await self._load_media(task_id, env, cfg,
+                                                     use=triage.use_media or explicit_image_request)
         try:
             await self._run_editorial(task_id, env, locale, cfg, triage, images, dup_warnings,
                                       started, clean_fallback=clean_fallback)
@@ -555,6 +562,7 @@ class Pipeline:
             packet = VerifiedFacts()
         action, options = env.image_action, env.image_options
         selected = ACTIONS.get(action)
+        regional_edit = wants_region_edit(action, options)
         m, hub, limits = cfg.models, self.app.hub, self.app.limits
         rules = prompts.render_json("image_actions", locale.code)
         option_rules = "\n".join(rules["options"][flag.value] for flag in sorted(options.flags))
@@ -578,33 +586,67 @@ class Pipeline:
             if execution == "omit":
                 return ImageOutcome(idx, decision, reason)
             if execution == "keep":
-                output = await asyncio.to_thread(self._optimize, reference.blob.data,
-                                                 graphic_hint(analyses[idx].image_type), cfg)
+                output = (reference.blob if regional_edit else
+                          await asyncio.to_thread(self._optimize, reference.blob.data,
+                                                  graphic_hint(analyses[idx].image_type), cfg))
                 return ImageOutcome(idx, decision, reason, output)
-            if not packet.facts:
-                return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "image_facts_unavailable"))
+            if mode != "promotion_cleanup" and not packet.facts:
+                return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "image_facts_unavailable"),
+                                    failure_stage=MediaFailureStage.IMAGE_POLICY)
+            regions: list[MarkRegion] = []
+            cleanup_contract = ""
+            if mode == "promotion_cleanup":
+                try:
+                    regions = approved_regions(analyses[idx], options, idx)
+                    await asyncio.to_thread(validate_pixel_scope, reference.blob.data, regions, analyses[idx])
+                    cleanup_contract = json.dumps({"editing_rights_confirmed": True,
+                        "explicit_promotion_removal": True, "preserve_original_text": True,
+                        "selected_regions": [region.model_dump(mode="json") for region in regions],
+                        "protected_marks": [mark.model_dump(mode="json") for mark in analyses[idx].mark_regions
+                                            if mark.kind != "promotion"]}, ensure_ascii=False)
+                except ValueError:
+                    return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "cleanup_scope_required"),
+                                        failure_stage=MediaFailureStage.IMAGE_POLICY)
             try:
-                prompt = render_image(chosen, reference)
-                async with limits.image:
-                    if execution == "edit":
-                        raw = await hub.cpa.images_edit(m.image_model, prompt, reference.blob.data,
-                            reference.blob.mime, size=m.image_size, mode=m.image_edit_mode)
-                    else:
-                        raw = await hub.cpa.images_generate(m.image_model, prompt, size=m.image_size)
-                graphic = True if execution == "create" else graphic_hint(analyses[idx].image_type)
-                output = await asyncio.to_thread(self._optimize, raw, graphic, cfg)
+                if mode == "promotion_cleanup":
+                    patches = []
+                    for region in regions:
+                        crop = await asyncio.to_thread(crop_region, reference.blob.data, region)
+                        patch_prompt = prompts.render("image_cleanup", locale.code,
+                            cleanup_contract=json.dumps({"region": region.model_dump(mode="json"),
+                                "editing_rights_confirmed": True}, ensure_ascii=False)).user
+                        async with limits.image:
+                            patches.append(await hub.cpa.images_edit(m.image_model, patch_prompt, crop,
+                                "image/png", size=m.image_size, mode=m.image_edit_mode))
+                    output = await asyncio.to_thread(composite_patches, reference.blob.data, regions, patches)
+                else:
+                    prompt = render_image(chosen, reference)
+                    async with limits.image:
+                        if execution == "edit":
+                            raw = await hub.cpa.images_edit(m.image_model, prompt, reference.blob.data,
+                                reference.blob.mime, size=m.image_size, mode=m.image_edit_mode)
+                        else:
+                            raw = await hub.cpa.images_generate(m.image_model, prompt, size=m.image_size)
+                    graphic = True if execution == "create" else graphic_hint(analyses[idx].image_type)
+                    output = await asyncio.to_thread(self._optimize, raw, graphic, cfg)
+                await self._event(task_id, "IMAGE2", f"image {idx}: output produced")
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("image execution failed")
-                return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "image_failed"))
+                await self._event(task_id, "IMAGE2", f"image {idx}: processing failed", level="warning")
+                return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "media_stage_image2"),
+                                    failure_stage=MediaFailureStage.IMAGE2)
             passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
-                                               facts=packet.text, post=rewrite.post,
-                source_text=(analyses[reference.idx].extracted_text if reference else ""))
+                facts=packet.text, post=rewrite.post,
+                source_text=(analyses[reference.idx].extracted_text if reference else ""),
+                cleanup_contract=cleanup_contract, cleanup_regions=regions)
+            await self._event(task_id, "QC", f"image {idx}: {'passed' if passed else qc_reason}",
+                              level="info" if passed else "warning")
             if not passed:
                 return ImageOutcome(idx, ImageDecision.REVIEW,
                     t(ui_locale, "qc_fail", mode=label(ui_locale, mode), reason=qc_reason),
-                    review_blob=output, ai_generated=True)
+                    review_blob=output, ai_generated=True, failure_stage=MediaFailureStage.QC)
             return ImageOutcome(idx, decision, reason + " " + t(ui_locale, "qc_pass"), output,
                                 ai_generated=True)
 
@@ -612,7 +654,7 @@ class Pipeline:
             return [ImageOutcome(idx, ImageDecision._value2member_map_.get(action.value, action),
                     t(ui_locale, "image_action_reason", action=t(ui_locale, "image_action_" + action.value)))
                     for idx in range(len(env.media))]
-        if selected and selected.text_capable:
+        if selected and selected.text_capable and not (regional_edit and env.media):
             # One original publishing visual for the canonical task, including text-only input.
             omitted = [ImageOutcome(idx, ImageDecision.OMIT, t(ui_locale, "image_action_omit"))
                        for idx in range(len(env.media))]
@@ -628,9 +670,11 @@ class Pipeline:
             owned = media_is_owned(image.source, env, owned_ids=set(cfg.pipeline.owned_source_ids),
                                    direct_uploads_owned=cfg.pipeline.direct_uploads_owned)
             resolved = plan(analyses[image.idx], requested=action, options=options, owned=owned,
-                            target_language=locale.language_tag, locale=ui_locale)
+                            target_language=locale.language_tag, locale=ui_locale, idx=image.idx)
             if resolved.execution == "review":
-                return ImageOutcome(image.idx, ImageDecision.REVIEW, resolved.reason)
+                await self._event(task_id, "IMAGE_POLICY", f"image {image.idx}: {resolved.reason}", level="warning")
+                return ImageOutcome(image.idx, ImageDecision.REVIEW, resolved.reason,
+                                    failure_stage=MediaFailureStage.IMAGE_POLICY)
             return await execute(image.idx, resolved.action, resolved.execution, resolved.qc_mode,
                                  resolved.reason, image)
 
@@ -673,7 +717,8 @@ class Pipeline:
             if row.get("analysis")}
         sources = {int(idx): ImageAnalysis.model_validate(value) for idx, value in stored.items()}
         spec = ACTIONS.get(env.image_action)
-        need_source = spec is None or (spec.execution != "omit" and not spec.text_capable)
+        need_source = (spec is None or (spec.execution != "omit" and not spec.text_capable) or
+                       wants_region_edit(env.image_action, env.image_options))
         images, warnings = (await self._load_media(task_id, env, cfg, use=True)
                             if need_source else ([], []))
         try:
@@ -687,7 +732,9 @@ class Pipeline:
                                    **await self.app.repo.get_rules(env.locale, env.market)})
             rewrite = RewriteResult(post=task["draft_text"], hook=meta.get("hook") or "",
                                     image_brief="")
-            outcomes = await self._process_images(task_id, env, images[:rules.max_images], {**sources, **analyses},
+            execution_analyses = (analyses if wants_region_edit(env.image_action, env.image_options)
+                                 else {**sources, **analyses})
+            outcomes = await self._process_images(task_id, env, images[:rules.max_images], execution_analyses,
                 rewrite, Evaluation(suitable=True, value_score=0), locale, cfg,
                 verified_facts=packet, max_images=rules.max_images)
             # Only replace assets after execution/QC; reference counting and R2 policy stay intact.
@@ -716,16 +763,34 @@ class Pipeline:
 
     async def _qc(self, env: InputEnvelope, locale: Locale, cfg: AppSettings, mode: QCMode,
                   candidate: ImageBlob, reference: LoadedImage | None, *, facts: str, post: str,
-                  source_text: str = ""
+                  source_text: str = "", cleanup_contract: str = "",
+                  cleanup_regions: list[MarkRegion] | None = None
                   ) -> tuple[bool, str]:
         """Visual verification of one Image2 output. Errors count as a failed check."""
         allowed = [facts]  # generated draft is never verification evidence
-        if mode in ("enhance", "localize"):
+        if mode == "promotion_cleanup":
+            if reference is None or not cleanup_regions or not cleanup_contract:
+                return False, t(env.locale, "cleanup_scope_required")
+            try:
+                contract = json.loads(cleanup_contract)
+                if (contract.get("editing_rights_confirmed") is not True or
+                    contract.get("explicit_promotion_removal") is not True or
+                    contract.get("selected_regions") != [r.model_dump(mode="json") for r in cleanup_regions] or
+                    not wants_region_edit(env.image_action, env.image_options) or
+                    not media_is_owned(reference.source, env, owned_ids=set(cfg.pipeline.owned_source_ids),
+                                       direct_uploads_owned=cfg.pipeline.direct_uploads_owned)):
+                    return False, t(env.locale, "cleanup_scope_required")
+            except (ValueError, AttributeError):
+                return False, t(env.locale, "cleanup_scope_required")
+            if not await asyncio.to_thread(unchanged_outside, reference.blob.data, candidate.data, cleanup_regions):
+                return False, t(env.locale, "cleanup_pixel_failure")
+        if mode in ("enhance", "localize", "promotion_cleanup"):
             allowed.append(source_text)  # unchanged facts on authorized source edits
         try:
             messages = build_messages(
                 mode, locale=locale.code, market=env.market, language_name=locale.language_name,
                 facts=facts, reference_text=source_text, density=env.image_options.information_density.value,
+                cleanup_contract=cleanup_contract,
                 candidate_url=image_data_url(candidate.data, candidate.mime),
                 reference_url=(image_data_url(reference.blob.data, reference.blob.mime)
                                if reference is not None else None),
@@ -748,7 +813,7 @@ class Pipeline:
                 raise
             except Exception:
                 return False, t(env.locale, "qc_unavailable")
-        return qc_verdict(qc, allowed_texts=allowed, locale=env.locale, target_locale=locale.code)
+        return qc_verdict(qc, allowed_texts=allowed, locale=env.locale, target_locale=locale.code, mode=mode)
 
     async def _persist(self, task_id: str, images: list[LoadedImage],
                        outcomes: list[ImageOutcome], analyses: dict[int, ImageAnalysis],
@@ -759,10 +824,13 @@ class Pipeline:
         stored = 0
         for o in outcomes:
             decision, reason = o.decision, o.reason
+            failure_stage = o.failure_stage
+            if decision == ImageDecision.REVIEW and failure_stage is None:
+                failure_stage = MediaFailureStage.QC if o.review_blob is not None else MediaFailureStage.IMAGE_POLICY
             key: str | None = None
             kind: str | None = None
             try:
-                if o.output is not None:
+                if o.output is not None and decision != ImageDecision.REVIEW and failure_stage is None:
                     kind = "final"
                     key = await self.app.storage.persist(task_id, o.idx, o.output, kind)
                 elif decision == ImageDecision.REVIEW and cfg.storage.persist_review_media:
@@ -781,15 +849,22 @@ class Pipeline:
                 label = ("R2 budget reached" if isinstance(exc, StorageBudgetExceeded)
                          else f"R2 upload failed ({type(exc).__name__})")
                 note = mask(f"{label}: {exc}")[:300]
-                decision, reason, key, kind = (
-                    ImageDecision.REVIEW, f"{reason} " + t(locale,
-                        "storage_budget" if isinstance(exc, StorageBudgetExceeded)
-                        else "storage_failed"), None, None)
-                await self._event(task_id, "persist", f"image {o.idx}: {note}", level="warning")
+                upload_reason = t(locale, "storage_budget" if isinstance(exc, StorageBudgetExceeded)
+                                  else "storage_failed")
+                if failure_stage is None:
+                    failure_stage, reason = MediaFailureStage.R2_UPLOAD, upload_reason
+                else:
+                    reason += f" [R2_UPLOAD] {upload_reason}"
+                decision, key, kind = ImageDecision.REVIEW, None, None
+                await self._event(task_id, "R2_UPLOAD", f"image {o.idx}: {note}", level="warning")
             stored += key is not None
+            if key:
+                await self._event(task_id, "R2_UPLOAD", f"image {o.idx}: {kind} asset attached")
+            if failure_stage and not reason.startswith(f"[{failure_stage.value}]"):
+                reason = f"[{failure_stage.value}] {reason}"
             await self.app.repo.update_media_decision(task_id, o.idx, decision.value, reason,
                                                       ai_generated=o.ai_generated)
-            results.append(MediaResult(idx=o.idx, decision=decision, reason=reason,
+            results.append(MediaResult(idx=o.idx, decision=decision, reason=reason, failure_stage=failure_stage,
                                        asset_key=key, asset_kind=kind,  # type: ignore[arg-type]
                                        ai_generated=o.ai_generated))
         await self._event(task_id, "persist", f"{stored} asset(s) persisted to R2")

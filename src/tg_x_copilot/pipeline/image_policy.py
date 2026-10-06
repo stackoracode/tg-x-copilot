@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from ..image_settings import ACTIONS, ImageAction, ImageOption, ImageOptions, MediaCategory
 from ..i18n import t
 from ..models import ImageAnalysis, ImageDecision, InputEnvelope, SourceMedia
+from .overlays import approved_regions, wants_region_edit
 
 _REDRAWABLE = {'chart', 'infographic', 'illustration', 'screenshot', 'photo_generic', 'meme',
                'ui_screenshot', 'mixed_layout', 'generic_visual', 'brand_asset'}
@@ -22,7 +23,8 @@ def decide(analysis: ImageAnalysis, *, owned_source: bool, target_language: str,
         analysis.text_language.lower().split('-')[0] != target_language.lower().split('-')[0] or
         (target_language.lower().split('-')[0] == 'zh' and
          analysis.text_script != 'simplified')))
-    overlay = analysis.has_channel_overlay or analysis.has_third_party_watermark
+    overlay = analysis.has_channel_overlay or (analysis.has_third_party_watermark and
+        analysis.has_source_copyright_mark is None and not analysis.mark_regions)
     real_world = analysis.image_type == 'photo_real_event' or analysis.depicts_real_people
     # Unlicensed photos are never edited/regenerated as photographs. Original cards use facts
     # only, without a source image sent to the generator or a real person's likeness.
@@ -71,7 +73,19 @@ class ImagePlan:
 
 
 def plan(analysis: ImageAnalysis, *, requested: ImageAction | None, options: ImageOptions,
-         owned: bool, target_language: str, locale: str) -> ImagePlan:
+         owned: bool, target_language: str, locale: str, idx: int = 0) -> ImagePlan:
+    if wants_region_edit(requested, options) and requested not in (ImageAction.OMIT, ImageAction.TEXT_ONLY):
+        if not owned:
+            return ImagePlan(None, 'review', None, t(locale, 'cleanup_rights_required'))
+        if analysis.sensitive or analysis.relevance < .3:
+            return ImagePlan(None, 'review', None, t(locale, 'policy_sensitive'))
+        if not analysis.has_channel_overlay and not analysis.mark_regions and not analysis.has_third_party_watermark:
+            return ImagePlan(ImageAction.KEEP, 'keep', None, t(locale, 'cleanup_no_promotion'))
+        try:
+            approved_regions(analysis, options, idx)
+        except ValueError:
+            return ImagePlan(None, 'review', None, t(locale, 'cleanup_scope_required'))
+        return ImagePlan(ImageAction.CLEAN_RECREATE, 'edit', 'promotion_cleanup', t(locale, 'cleanup_authorized'))
     if requested is None:
         decision, reason = decide(analysis, owned_source=owned,
                                   target_language=target_language, locale=locale)
@@ -88,7 +102,7 @@ def plan(analysis: ImageAnalysis, *, requested: ImageAction | None, options: Ima
         return ImagePlan(None, 'review', None, t(locale, 'policy_sensitive' if analysis.sensitive
                                                else 'policy_unrelated'))
     if spec.execution == 'keep' or (spec.execution == 'edit' and spec.qc_mode == 'enhance'):
-        if not owned or analysis.has_channel_overlay or analysis.has_third_party_watermark:
+        if not owned:
             return ImagePlan(None, 'review', None, t(locale, 'image_rights_required'))
         foreign = analysis.contains_text and (not analysis.text_language or
             analysis.text_language.split('-')[0].lower() != target_language.lower() or
@@ -100,8 +114,7 @@ def plan(analysis: ImageAnalysis, *, requested: ImageAction | None, options: Ima
         MediaCategory.UI_SCREENSHOT, MediaCategory.INFOGRAPHIC, MediaCategory.MIXED_LAYOUT}
     redesign_localization = (qc_mode == 'localize' and flexible_information and
                               ImageOption.REDESIGN in options.flags)
-    if execution == 'edit' and (not owned or analysis.has_channel_overlay or
-                                analysis.has_third_party_watermark or redesign_localization):
+    if execution == 'edit' and (not owned or redesign_localization):
         execution, qc_mode = 'create', 'regenerate'
     documentary = analysis.image_type == 'photo_real_event' or analysis.depicts_real_people
     if execution == 'create' and documentary:
