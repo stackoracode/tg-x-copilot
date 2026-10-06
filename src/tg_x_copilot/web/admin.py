@@ -3,6 +3,7 @@ SSH tunnel: `ssh -L 8080:127.0.0.1:8080 vps`."""
 
 from __future__ import annotations
 
+import json
 import secrets
 from pathlib import Path
 from typing import Any
@@ -11,12 +12,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup
 from pydantic import ValidationError
 
 from ..config import EDITABLE_KEYS, get_path
 from ..i18n import label
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates.env.filters["tojson"] = lambda val, indent=None: Markup(
+    json.dumps(val, ensure_ascii=False, indent=indent)
+)
 _basic = HTTPBasic(auto_error=False)
 
 
