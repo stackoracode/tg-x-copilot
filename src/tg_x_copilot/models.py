@@ -33,7 +33,9 @@ class MediaKind(StrEnum):
 class ImageDecision(StrEnum):
     KEEP = "keep"
     ENHANCE = "enhance"
-    REGENERATE = "regenerate"
+    REGENERATE = "regenerate"  # backward-compatible stored decision
+    LOCALIZE = "localize"
+    RECREATE = "recreate"
     REVIEW = "review"
 
 
@@ -43,6 +45,8 @@ class ImageDecision(StrEnum):
 class SourceMedia(BaseModel):
     message_id: int
     kind: MediaKind
+    forwarded: bool | None = None  # None for legacy envelopes
+    source_chat_id: int | None = None
     mime: str | None = None
     file_name: str | None = None
     size: int | None = None
@@ -63,6 +67,8 @@ class InputEnvelope(BaseModel):
     message_ids: list[int]
     grouped_ids: list[int] = Field(default_factory=list)
     text: str = ""
+    message_texts: list[str] = Field(default_factory=list)  # one caption per message
+    message_urls: list[list[str]] = Field(default_factory=list)
     urls: list[str] = Field(default_factory=list)
     media: list[SourceMedia] = Field(default_factory=list)
     forwards: list[ForwardOrigin] = Field(default_factory=list)
@@ -115,8 +121,12 @@ class ImageAnalysis(BaseModel):
     depicts_real_people: bool = False
     has_third_party_watermark: bool = False
     watermark_text: str | None = None
+    has_channel_overlay: bool = False
+    brand_names: list[str] = Field(default_factory=list)
+    source_facts: list[str] = Field(default_factory=list)
     contains_text: bool = False
     text_language: str | None = None
+    text_script: str | None = None  # simplified / traditional / mixed / other
     extracted_text: str = ""
     quality: Literal["low", "ok", "high"] = "ok"
     relevance: float = 0.5
@@ -170,10 +180,12 @@ class ImageQC(BaseModel):
     #                        (localize), or correctly spelled and allowed (regenerate)
     numbers_consistent: bool
     dates_consistent: bool
+    brands_consistent: bool = False  # logos/brands verified against source
     names_consistent: bool  # product, brand, organization and place names
     people_consistent: bool  # no people added/removed/altered; no real-person likeness
     watermarks_ok: bool  # no watermark/logo added, and none removed
     facts_consistent: bool  # nothing contradicts the source facts
+    language_consistent: bool = False  # fail closed when upstream omits this check
     rendered_text: str = ""  # all text visible in the candidate, verbatim
     issues: list[str] = Field(default_factory=list)
 

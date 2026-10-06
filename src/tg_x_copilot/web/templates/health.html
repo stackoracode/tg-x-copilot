@@ -1,14 +1,14 @@
 {% extends "base.html" %}
-{% block title %}Health{% endblock %}
+{% block title %}{{ t('admin_Health') }}{% endblock %}
 {% block content %}
 <div class="card">
-  <h3 style="margin-top:0">Connection test</h3>
+  <h3 style="margin-top:0">{{ t('admin_Connection test') }}</h3>
   <table>
-    <tr><th>Service</th><th>Status</th><th>Latency</th><th>Detail</th></tr>
+    <tr><th>{{ t('admin_Service') }}</th><th>{{ t('admin_Status') }}</th><th>{{ t('admin_Latency') }}</th><th>{{ t('admin_Detail') }}</th></tr>
     {% for r in results %}
-    <tr><td>{{ r.name }}</td><td class="{{ 'ok' if r.ok else 'bad' }}">{{ "OK" if r.ok else "FAIL" }}</td><td>{{ r.latency_ms }} ms</td><td><code>{{ r.detail }}</code></td></tr>
+    <tr><td>{{ r.name }}</td><td class="{{ 'ok' if r.ok else 'bad' }}">{{ t("admin_OK" if r.ok else "admin_FAIL") }}</td><td>{{ r.latency_ms }} {{ t("admin_ms") }}</td><td><code>{{ t("connection_ok" if r.ok else "connection_failed") }}</code></td></tr>
     {% endfor %}
   </table>
-  <p><a href="/actions/health"><button type="button">Run again</button></a></p>
+  <p><a href="/actions/health"><button type="button">{{ t('admin_Run again') }}</button></a></p>
 </div>
 {% endblock %}

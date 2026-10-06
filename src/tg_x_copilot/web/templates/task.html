@@ -1,45 +1,46 @@
 {% extends "base.html" %}
-{% block title %}Task {{ task.id[:8] }}{% endblock %}
+{% block title %}{{ t('admin_Task') }} {{ task.id[:8] }}{% endblock %}
 {% block content %}
 <div class="card">
-  <h2 style="margin-top:0">Task <code>{{ task.id }}</code> <span class="pill s-{{ task.status }}">{{ task.status }}</span></h2>
-  <p class="muted">stage {{ task.stage or "-" }} · attempts {{ task.attempts }} · score {{ task.score }} · route {{ task.route }} · {{ task.locale }}/{{ task.market }} · created {{ task.created_at }}</p>
-  {% if task.error %}<pre class="bad">{{ task.error }}</pre>{% endif %}
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/approve">{% set blocking = (task.draft_meta or {}).problems %}<button class="primary" {% if not (task.status == "draft_ready" or (task.status == "needs_review" and not blocking)) %}disabled{% endif %}>{% if task.status == "needs_review" %}Approve (reviewed){% else %}Approve{% endif %}</button></form>
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/regenerate"><button>Regenerate</button></form>
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/reject"><button>Reject</button></form>
+  <h2 style="margin-top:0">{{ t('admin_Task') }} <code>{{ task.id }}</code> <span class="pill s-{{ task.status }}">{{ label(task.status) }}</span></h2>
+  <p class="muted">{{ t('admin_stage') }} {{ a(task.stage or "-") }} · {{ t('admin_attempts') }} {{ task.attempts }} · {{ t('admin_score') }} {{ task.score }} · {{ t('admin_route') }} {{ label(task.route or "-") }} · {{ task.locale }}/{{ task.market }} · {{ t('admin_created') }} {{ task.created_at }}</p>
+  {% if task.locale != locale %}<p class="muted">{{ t('admin_Locale mismatch') }}</p>{% endif %}
+  {% if task.error %}<pre class="bad">{{ t("task_failure") }}</pre>{% endif %}
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/approve">{% set blocking = (task.draft_meta or {}).problems %}<button class="primary" {% if not (task.status == "draft_ready" or (task.status == "needs_review" and not blocking)) %}disabled{% endif %}>{% if task.status == "needs_review" %}{{ t('admin_Approve (reviewed)') }}{% else %}{{ t('admin_Approve') }}{% endif %}</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/regenerate"><button>{{ t('admin_Regenerate') }}</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/reject"><button>{{ t('admin_Reject') }}</button></form>
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0">Draft</h3>
-  {% if task.draft_text %}<pre>{{ task.draft_text }}</pre>{% else %}<p class="muted">No draft.</p>{% endif %}
+  <h3 style="margin-top:0">{{ t('admin_Draft') }}</h3>
+  {% if task.draft_text %}<pre>{{ task.draft_text }}</pre>{% else %}<p class="muted">{{ t('admin_No draft.') }}</p>{% endif %}
   {% set meta = task.draft_meta or {} %}
-  {% if meta.problems %}<h4>Blocking problems</h4><ul>{% for p in meta.problems %}<li class="bad">{{ p }}</li>{% endfor %}</ul>{% endif %}
-  {% if meta.review %}<h4>Requires review before approval</h4><ul>{% for p in meta.review %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
-  {% if meta.warnings %}<h4>Warnings</h4><ul>{% for p in meta.warnings %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
-  {% if meta.claims %}<h4>Claims</h4><ul>{% for c in meta.claims %}<li><span class="pill">{{ c.basis }}</span> {{ c.text }}</li>{% endfor %}</ul>{% endif %}
-  {% if meta.added_value %}<p><b>Added value:</b> {{ meta.added_value }}</p>{% endif %}
+  {% if meta.problems %}<h4>{{ t('admin_Blocking problems') }}</h4><ul>{% for p in meta.problems %}<li class="bad">{{ p }}</li>{% endfor %}</ul>{% endif %}
+  {% if meta.review %}<h4>{{ t('admin_Requires review before approval') }}</h4><ul>{% for p in meta.review %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
+  {% if meta.warnings %}<h4>{{ t('admin_Warnings') }}</h4><ul>{% for p in meta.warnings %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
+  {% if meta.claims %}<h4>{{ t('admin_Claims') }}</h4><ul>{% for c in meta.claims %}<li><span class="pill">{{ label(c.basis) }}</span> {{ c.text }}</li>{% endfor %}</ul>{% endif %}
+  {% if meta.added_value %}<p><b>{{ t('admin_Added value:') }}</b> {{ meta.added_value }}</p>{% endif %}
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0">Source</h3>
-  <pre>{{ task.source_text or "(no text)" }}</pre>
-  {% if task.envelope.urls %}<p>Links: {% for u in task.envelope.urls %}<code>{{ u }}</code> {% endfor %}</p>{% endif %}
-  {% if task.envelope.forwards %}<p class="muted">Forwarded from: {% for f in task.envelope.forwards %}{{ f.chat_id or "" }} {{ f.sender_name or "" }}; {% endfor %}</p>{% endif %}
+  <h3 style="margin-top:0">{{ t('admin_Source') }}</h3>
+  <pre>{{ task.source_text or t("admin_(no text)") }}</pre>
+  {% if task.envelope.urls %}<p>{{ t('admin_Links:') }} {% for u in task.envelope.urls %}<code>{{ u }}</code> {% endfor %}</p>{% endif %}
+  {% if task.envelope.forwards %}<p class="muted">{{ t('admin_Forwarded from:') }} {% for f in task.envelope.forwards %}{{ f.chat_id or "" }} {{ f.sender_name or "" }}; {% endfor %}</p>{% endif %}
 </div>
 
 {% if media %}
 <div class="card">
-  <h3 style="margin-top:0">Media</h3>
+  <h3 style="margin-top:0">{{ t('admin_Media') }}</h3>
   <div class="grid">
   {% for m in media %}
     <div>
-      <b>#{{ m.idx }}</b> <span class="pill">{{ m.decision or "-" }}</span> <span class="muted">{{ m.kind }} {{ m.width or "" }}×{{ m.height or "" }}</span>
+      <b>#{{ m.idx }}</b> <span class="pill">{{ label(m.decision or "-") }}</span> <span class="muted">{{ a(m.kind) }} {{ m.width or "" }}×{{ m.height or "" }}</span>
       {% if m.ai_generated %}<span class="pill">AI</span>{% endif %}
-      {% if m.asset_url %}<div class="muted">{{ m.asset_kind }} asset · {{ ((m.asset_size or 0) / 1024) | round(1) }} KB · {{ m.asset_mime }}</div><a href="{{ m.asset_url }}" target="_blank" rel="noopener"><img src="{{ m.asset_url }}" alt="{{ m.asset_kind }} {{ m.idx }}"></a>
-      {% else %}<div class="muted">not stored (source stays in Telegram)</div>{% endif %}
+      {% if m.asset_url %}<div class="muted">{{ a(m.asset_kind) }} {{ t('admin_asset') }} · {{ ((m.asset_size or 0) / 1024) | round(1) }} KB · {{ m.asset_mime }}</div><a href="{{ m.asset_url }}" target="_blank" rel="noopener"><img src="{{ m.asset_url }}" alt="{{ a(m.asset_kind) }} {{ m.idx }}"></a>
+      {% else %}<div class="muted">{{ t('admin_not stored (source stays in Telegram)') }}</div>{% endif %}
       <p>{{ m.decision_reason or "" }}</p>
-      {% if m.analysis %}<details><summary class="muted">analysis</summary><pre>{{ m.analysis | tojson(indent=2) }}</pre></details>{% endif %}
+      {% if m.analysis %}<details><summary class="muted">{{ t('admin_analysis') }}</summary><pre>{{ m.analysis | tojson(indent=2) }}</pre></details>{% endif %}
     </div>
   {% endfor %}
   </div>
@@ -47,17 +48,17 @@
 {% endif %}
 
 <div class="card">
-  <h3 style="margin-top:0">Model outputs</h3>
-  <details><summary>Jev triage (TypeSafe System One)</summary><pre>{{ task.jev_result | tojson(indent=2) }}</pre></details>
-  <details><summary>Evaluation</summary><pre>{{ task.evaluation | tojson(indent=2) }}</pre></details>
+  <h3 style="margin-top:0">{{ t('admin_Model outputs') }}</h3>
+  <details><summary>{{ t('admin_Jev triage (TypeSafe System One)') }}</summary><pre>{{ task.jev_result | tojson(indent=2) }}</pre></details>
+  <details><summary>{{ t('admin_Evaluation') }}</summary><pre>{{ task.evaluation | tojson(indent=2) }}</pre></details>
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0">Timeline</h3>
+  <h3 style="margin-top:0">{{ t('admin_Timeline') }}</h3>
   <table>
-    <tr><th>Time</th><th>Step</th><th>Level</th><th>Message</th></tr>
+    <tr><th>{{ t('admin_Time') }}</th><th>{{ t('admin_Step') }}</th><th>{{ t('admin_Level') }}</th><th>{{ t('admin_Message') }}</th></tr>
     {% for e in events %}
-    <tr><td class="muted">{{ e.created_at }}</td><td>{{ e.step }}</td><td class="{% if e.level == 'error' %}bad{% endif %}">{{ e.level }}</td><td>{{ e.message }}</td></tr>
+    <tr><td class="muted">{{ e.created_at }}</td><td>{{ a(e.step) }}</td><td class="{% if e.level == 'error' %}bad{% endif %}">{{ a(e.level) }}</td><td>{{ e.message }}</td></tr>
     {% endfor %}
   </table>
 </div>

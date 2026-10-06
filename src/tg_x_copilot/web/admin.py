@@ -14,26 +14,30 @@ from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 
 from ..config import EDITABLE_KEYS, get_path
-from ..logging_setup import mask
+from ..i18n import label
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
-_basic = HTTPBasic()
+_basic = HTTPBasic(auto_error=False)
 
 
 def _ctx(request: Request) -> Any:
     return request.app.state.ctx
 
 
-def require_admin(request: Request, creds: HTTPBasicCredentials = Depends(_basic)) -> str:
+def require_admin(request: Request, creds: HTTPBasicCredentials | None = Depends(_basic)) -> str:
     cfg = _ctx(request).config.base.admin
     password = cfg.password.get_secret_value()
     if not password:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE,
-                            "Set ADMIN__PASSWORD to enable the admin UI.")
+                            _ctx(request).i18n.t(_ctx(request).config.current.default_locale, "admin_auth_disabled"))
+    if creds is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED,
+                            _ctx(request).i18n.t(_ctx(request).config.current.default_locale, "unauthorized"),
+                            headers={"WWW-Authenticate": "Basic"})
     ok_user = secrets.compare_digest(creds.username.encode(), cfg.username.encode())
     ok_pass = secrets.compare_digest(creds.password.encode(), password.encode())
     if not (ok_user and ok_pass):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unauthorized",
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, _ctx(request).i18n.t(_ctx(request).config.current.default_locale, "unauthorized"),
                             headers={"WWW-Authenticate": "Basic"})
     return creds.username
 
@@ -42,8 +46,18 @@ router = APIRouter(dependencies=[Depends(require_admin)])
 
 
 def _render(request: Request, name: str, **data: Any) -> HTMLResponse:
-    return templates.TemplateResponse(request, name, {"flash": request.query_params.get("msg"),
-                                                      **data})
+    ctx = _ctx(request)
+    locale = ctx.config.current.default_locale
+    def tr(key: str, **kw: Any) -> str:
+        return ctx.i18n.t(locale, key, **kw)
+    def admin_label(value: str) -> str:
+        key = "admin_" + value
+        translated = tr(key)
+        return value if translated == key else translated
+    # Pass functions per request; no global mutation/race between language renders.
+    return templates.TemplateResponse(request, name, {
+        "flash": request.query_params.get("msg"), "locale": locale,
+        "t": tr, "a": admin_label, "label": lambda value: label(locale, value), **data})
 
 
 def _back(url: str, msg: str) -> RedirectResponse:
@@ -72,7 +86,7 @@ async def task_detail(request: Request, task_id: str) -> HTMLResponse:
     ctx = _ctx(request)
     task = await ctx.repo.get_task(task_id)
     if not task:
-        raise HTTPException(404, "task not found")
+        raise HTTPException(404, ctx.i18n.t(ctx.config.current.default_locale, "not_found"))
     media = await ctx.repo.list_media(task_id)
     r2 = ctx.hub.r2
     for m in media:
@@ -98,14 +112,25 @@ async def settings_page(request: Request) -> HTMLResponse:
     ctx = _ctx(request)
     base = ctx.config.base
     bootstrap = {
-        "db": f"{base.db.user}@{base.db.host}:{base.db.port}/{base.db.database}",
-        "telegram": f"api_id={base.telegram.api_id} allowed_users={base.telegram.allowed_user_ids}",
-        "concurrency": base.concurrency.model_dump(),
-        "locales": ctx.i18n.codes,
-        "credentials (env-only, values never shown)": ctx.config.credentials_status(),
+        ctx.i18n.t(ctx.config.current.default_locale, "admin_bootstrap_db"): f"{base.db.host}:{base.db.port}/{base.db.database}",
+        ctx.i18n.t(ctx.config.current.default_locale, "admin_bootstrap_telegram"): "✓",
+        ctx.i18n.t(ctx.config.current.default_locale, "admin_bootstrap_concurrency"): base.concurrency.model_dump(),
+        ctx.i18n.t(ctx.config.current.default_locale, "admin_bootstrap_locales"): ctx.i18n.codes,
+        ctx.i18n.t(ctx.config.current.default_locale, "admin_bootstrap_credentials"): ctx.config.credentials_status(),
     }
     return _render(request, "settings.html", rows=ctx.config.view(),
                    models=await ctx.repo.list_models(), bootstrap=bootstrap)
+
+
+@router.post("/settings/locale")
+async def locale_save(request: Request) -> RedirectResponse:
+    ctx = _ctx(request)
+    form = await request.form()
+    code = str(form.get("locale", ""))
+    if code not in ctx.i18n.codes:
+        return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "settings_invalid"))
+    await ctx.config.update({"default_locale": code})
+    return _back("/settings", ctx.i18n.t(code, "locale_saved"))
 
 
 @router.post("/settings")
@@ -120,20 +145,20 @@ async def settings_save(request: Request) -> RedirectResponse:
         current = get_path(ctx.config.current, key)
         try:
             new = ctx.config.parse_value(key, raw, current)
-        except ValueError as exc:
-            return _back("/settings", f"Invalid value for {key}: {exc}")
+        except ValueError:
+            return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "settings_invalid"))
         if new != current and not (current is not None and str(current) == str(new)):
             changes[key] = new
     for key in EDITABLE_KEYS:  # unchecked checkboxes are absent from the form
         if f"{key}__bool" in form and key not in form and get_path(ctx.config.current, key):
             changes[key] = False
     if not changes:
-        return _back("/settings", "No changes.")
+        return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "no_changes"))
     try:
-        keys = await ctx.config.update(changes)
-    except (ValueError, ValidationError) as exc:
-        return _back("/settings", mask(f"Invalid settings: {exc}")[:500])
-    return _back("/settings", f"Saved: {', '.join(keys)}")
+        await ctx.config.update(changes)
+    except (ValueError, ValidationError):
+        return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "settings_invalid"))
+    return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "settings_saved"))
 
 
 @router.post("/settings/reset/{key}")
@@ -141,13 +166,15 @@ async def settings_reset(request: Request, key: str) -> RedirectResponse:
     if key not in EDITABLE_KEYS:
         raise HTTPException(404)
     await _ctx(request).config.reset(key)
-    return _back("/settings", f"Reset {key} to env default.")
+    ctx = _ctx(request)
+    return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "settings_reset", key=key))
 
 
 @router.post("/actions/refresh-models")
 async def refresh_models(request: Request) -> RedirectResponse:
     summary = await _ctx(request).ops.refresh_models()
-    return _back("/settings", f"Models refreshed: {summary}")
+    ctx = _ctx(request)
+    return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "models_refreshed", summary=ctx.ops.model_summary(summary)))
 
 
 @router.get("/actions/health", response_class=HTMLResponse)

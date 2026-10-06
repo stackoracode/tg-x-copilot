@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
+from ..i18n import t
 from ..models import RewriteResult
 
 _URL = re.compile(r"https?://\S+")
@@ -86,48 +87,55 @@ def similarity(a: str, b: str) -> float:
 
 def check_rewrite(result: RewriteResult, *, source_text: str, rules: XRules,
                   verified_facts: list[str] | None = None,
-                  unverified_facts: list[str] | None = None) -> GuardReport:
+                  unverified_facts: list[str] | None = None,
+                  locale: str = "en-US") -> GuardReport:
     """verified_facts: text taken from the source itself (e.g. text read from its images).
     unverified_facts: LLM-produced material (editor key facts, background points). Numbers
     backed only by these, and any `background` claim, require human review."""
+    def tr(key: str, **kw: Any) -> str:
+        return t(locale, key, **kw)
     report = GuardReport()
     post = result.post.strip()
     lower = post.lower()
+    narrative = [post, result.hook, result.added_value, result.image_brief]
+    narrative.extend(c.text for c in result.claims)
+    if any(wrong_language(text, locale) for text in narrative if text):
+        report.problems.append(tr("guard_language"))
 
     if not post:
-        report.problems.append("Post is empty.")
+        report.problems.append(tr("guard_empty"))
         return report
     if not result.hook.strip():
-        report.problems.append("Missing hook.")
+        report.problems.append(tr("guard_hook"))
 
     length = x_length(post)
     if length > rules.max_chars:
-        report.problems.append(f"Post is {length} characters; limit is {rules.max_chars}.")
+        report.problems.append(tr("guard_length", length=length, limit=rules.max_chars))
 
     for phrase in rules.banned_phrases:
         if phrase.lower() in lower:
-            report.problems.append(f"Uses banned clickbait phrase: {phrase!r}.")
+            report.problems.append(tr("guard_banned", phrase=phrase))
 
     hashtags = _HASHTAG.findall(post)
     if len(hashtags) > rules.max_hashtags:
-        report.problems.append(f"{len(hashtags)} hashtags; max is {rules.max_hashtags}.")
+        report.problems.append(tr("guard_hashtags", count=len(hashtags), limit=rules.max_hashtags))
 
     emojis = sum(1 for ch in post if _is_emoji(ch))
     if emojis > rules.max_emojis:
-        report.problems.append(f"{emojis} emojis; max is {rules.max_emojis}.")
+        report.problems.append(tr("guard_emojis", count=emojis, limit=rules.max_emojis))
 
     shouting = [w for w in _CAPS_WORD.findall(post) if w not in _ALLOWED_CAPS]
     if len(shouting) >= 2:
-        report.problems.append(f"ALL-CAPS shouting: {', '.join(shouting[:5])}.")
+        report.problems.append(tr("guard_caps", items=", ".join(shouting[:5])))
 
     if result.is_mere_translation:
-        report.problems.append("Model reports the post merely restates/translates the source.")
+        report.problems.append(tr("guard_translation"))
     if not result.added_value.strip():
-        report.problems.append("No added value described beyond the source.")
+        report.problems.append(tr("guard_value"))
 
     sim = similarity(source_text, post)
     if sim >= rules.similarity_threshold:
-        report.problems.append(f"Too close to the source text (similarity {sim:.2f}).")
+        report.problems.append(tr("guard_similarity", value=f"{sim:.2f}"))
 
     # Fabrication signal: every number must be traceable. Numbers absent everywhere block the
     # draft; numbers backed only by LLM-produced facts need a human check.
@@ -141,19 +149,37 @@ def check_rewrite(result: RewriteResult, *, source_text: str, rules: XRules,
     unknown = sorted(n for n in post_numbers if n not in verified and n not in unverified)
     if unknown:
         report.problems.append(
-            "Numbers not found in source or approved facts (possible fabrication): "
-            + ", ".join(unknown)
+            tr("guard_numbers", items=", ".join(unknown))
         )
     llm_only = sorted(n for n in post_numbers if n not in verified and n in unverified)
     if llm_only:
         report.review.append(
-            "Numbers backed only by LLM-extracted facts, not the source text: "
-            + ", ".join(llm_only)
+            tr("guard_llm_numbers", items=", ".join(llm_only))
         )
 
     # Background facts added by the LLM are unverified: they require review, not just a warning.
     # Opinions/explanations (basis "opinion") assert no new fact and are allowed as-is.
     for claim in result.claims:
         if claim.basis == "background":
-            report.review.append(f"Unverified background claim: {claim.text}")
+            report.review.append(tr("guard_background", claim=claim.text))
     return report
+
+
+def wrong_language(text: str, locale: str) -> bool:
+    """Catch obvious wrong-language prose. Names and technical tokens remain valid.
+
+    Semantic language checking is also required by editorial and visual QC prompts.
+    """
+    # Strip URLs/code; Chinese proper names may appear in English posts, but full Chinese
+    # sentences must not. Latin names/identifiers are allowed in Chinese prose.
+    prose = _URL.sub('', text)
+    prose = re.sub(r'`[^`]*`', '', prose)
+    cjk = re.findall(r'[\u3400-\u9fff]', prose)
+    if locale == 'en-US':
+        # Long Chinese company/person names remain valid in English prose.
+        # Semantic verification catches untranslated sentences without punctuation.
+        return bool(re.search(r'[\u3400-\u9fff]{5,}[，。！？]', prose))
+    if locale == 'zh-CN':
+        return (not cjk and len(re.findall(r'\b[A-Za-z]+\b', prose)) >= 4) or bool(
+            re.search(r'\b(?:the|this|these|there|we|you|it)\s+(?:is|are|was|were|will|should|can)\b', prose, re.I))
+    return False

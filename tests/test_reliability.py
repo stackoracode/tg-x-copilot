@@ -54,7 +54,7 @@ async def test_jev_timeout_falls_back_to_main_llm(app):
     app.hub.jev.returns["ask"] = slow
     app.config.current.jev.budget_seconds = 0.05
     t = await asyncio.wait_for(Pipeline(app)._triage("t1", envelope(), app.i18n.get("en-US")), 2)
-    assert t.route == "proceed" and t.escalated and "timed out" in " ".join(t.reasons)
+    assert t.route == "proceed" and t.escalated and "Jev unavailable" in " ".join(t.reasons)
 
 
 @pytest.mark.parametrize("disable", ["enabled", "configured"])
@@ -120,8 +120,8 @@ async def test_text_draft_is_sent_even_if_r2_fetch_fails(app):
 
 def qc(**kw: Any) -> ImageQC:
     base = dict(passed=True, text_consistent=True, numbers_consistent=True,
-                dates_consistent=True, names_consistent=True, people_consistent=True,
-                watermarks_ok=True, facts_consistent=True, rendered_text="", issues=[])
+                dates_consistent=True, names_consistent=True, brands_consistent=True, people_consistent=True,
+                watermarks_ok=True, facts_consistent=True, language_consistent=True, rendered_text="", issues=[])
     base.update(kw)
     return ImageQC(**base)
 
@@ -132,8 +132,8 @@ def test_qc_verdict_passes_clean_result():
 
 @pytest.mark.parametrize("bad", [
     {"numbers_consistent": False}, {"people_consistent": False}, {"watermarks_ok": False},
-    {"names_consistent": False}, {"dates_consistent": False}, {"facts_consistent": False},
-    {"text_consistent": False}, {"issues": ["logo added"]}, {"passed": False},
+    {"names_consistent": False}, {"brands_consistent": False}, {"dates_consistent": False}, {"facts_consistent": False},
+    {"text_consistent": False}, {"language_consistent": False}, {"issues": ["logo added"]}, {"passed": False},
     {"rendered_text": "Opening 2027, 40 km"},  # numbers not in the reference
 ])
 def test_qc_verdict_fails_on_any_inconsistency(bad):
@@ -172,7 +172,7 @@ async def test_image2_output_passing_qc_is_final(app, settings):
     case = _image_case(app)
     app.hub.cpa.returns["chat_json"] = qc(rendered_text="12 km")
     [out] = await _run_images(app, settings, *case)
-    assert out.decision == ImageDecision.REGENERATE and out.output is not None
+    assert out.decision == ImageDecision.RECREATE and out.output is not None
     assert out.ai_generated and "QC passed" in out.reason
 
 

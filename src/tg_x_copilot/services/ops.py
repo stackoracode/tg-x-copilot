@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from ..logging_setup import mask
+from ..i18n import label
 from ..models import TaskStatus
 
 if TYPE_CHECKING:
@@ -44,6 +45,20 @@ class CheckResult:
 class Ops:
     def __init__(self, app: "AppContext") -> None:
         self.app = app
+
+    def t(self, key: str, **kwargs: Any) -> str:
+        return self.app.i18n.t(self.app.config.current.default_locale, key, **kwargs)
+
+    def model_summary(self, summary: dict[str, Any]) -> str:
+        parts = []
+        for provider, count in summary.items():
+            if provider == "configured_but_missing":
+                parts.append(self.t("models_missing", items=", ".join(count)))
+            elif isinstance(count, int):
+                parts.append(self.t("refresh_count", provider=provider, count=count))
+            else:
+                parts.append(self.t("refresh_failed", provider=provider))
+        return "; ".join(parts)
 
     # ------------------------------------------------------------------ models
 
@@ -131,13 +146,13 @@ class Ops:
     async def approve(self, task_id: str) -> tuple[bool, str]:
         task = await self.app.repo.get_task(task_id)
         if not task:
-            return False, "not found"
+            return False, self.t("not_found")
         meta = task.get("draft_meta") or {}
         status = task["status"]
         if status == TaskStatus.NEEDS_REVIEW.value and meta.get("problems"):
-            return False, "draft has blocking problems; regenerate or reject it"
+            return False, self.t("blocking")
         if status not in (TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value):
-            return False, f"only draft_ready / needs_review tasks can be approved (is {status})"
+            return False, self.t("cannot_approve", status=label(self.app.config.current.default_locale, status))
         await self.app.repo.set_status(task_id, TaskStatus.APPROVED, stage="done")
         # Final assets were already delivered to Telegram with the draft. Unless long-term
         # retention is enabled, approving frees them from R2 as well as any review copies.
@@ -152,31 +167,33 @@ class Ops:
             task_id, "approve",
             f"approved by operator ({'reviewed' if status == 'needs_review' else 'ready'}); "
             f"{freed} R2 object(s) deleted; retain_approved_assets={retain}")
-        return True, "approved"
+        return True, self.t("ops_approved")
 
     async def reject(self, task_id: str) -> tuple[bool, str]:
         task = await self.app.repo.get_task(task_id)
         if not task:
-            return False, "not found"
+            return False, self.t("not_found")
         if task["status"] in (TaskStatus.APPROVED.value, TaskStatus.PROCESSING.value):
-            return False, f"cannot reject a {task['status']} task"
+            return False, self.t("cannot_reject", status=label(self.app.config.current.default_locale, task["status"]))
         await self.app.repo.set_status(task_id, TaskStatus.REJECTED, stage="done")
         freed = await self.app.storage.release_task(task_id)
         await self.app.repo.add_event(task_id, "reject",
                                       f"rejected by operator; {freed} R2 object(s) deleted")
-        return True, "rejected"
+        return True, self.t("ops_rejected")
 
     async def regenerate(self, task_id: str) -> tuple[bool, str]:
         task = await self.app.repo.get_task(task_id)
         if not task:
-            return False, "not found"
+            return False, self.t("not_found")
         allowed = {TaskStatus.DRAFT_READY, TaskStatus.NEEDS_REVIEW, TaskStatus.SKIPPED,
                    TaskStatus.FAILED, TaskStatus.REJECTED}
         if TaskStatus(task["status"]) not in allowed:
-            return False, f"cannot regenerate a {task['status']} task"
+            return False, self.t("cannot_regenerate", status=label(self.app.config.current.default_locale, task["status"]))
         await self.app.storage.release_task(task_id)  # media is re-fetched from Telegram
+        await self.app.repo.set_task_locale(task_id, self.app.config.current.default_locale,
+                                            self.app.config.current.market)
         await self.app.repo.set_status(task_id, TaskStatus.RECEIVED, stage="queued")
         await self.app.repo.add_event(task_id, "regenerate", "re-queued by operator")
         if not await self.app.workers.enqueue(task_id, wait=False):
-            return True, "saved; queue is busy, the sweeper will pick it up shortly"
-        return True, "re-queued"
+            return True, self.t("ops_busy")
+        return True, self.t("ops_queued")

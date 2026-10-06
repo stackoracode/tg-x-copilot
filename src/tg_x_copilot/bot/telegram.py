@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from telethon import Button, TelegramClient, events
 
+from ..i18n import label
 from ..logging_setup import ctx
 
 if TYPE_CHECKING:
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 _MAX_MSG = 4000
-_DECISION_ICON = {"keep": "✅", "enhance": "✨", "regenerate": "🎨", "review": "👀"}
+_DECISION_ICON = {"keep": "✅", "enhance": "✨", "regenerate": "🎨", "localize": "🌐", "recreate": "🎨", "review": "👀"}
 
 
 def esc(value: Any) -> str:
@@ -56,7 +57,7 @@ class TelegramBot:
         log.info("telegram bot connected", extra=ctx(username=getattr(me, "username", None)))
         c = self.client
         c.add_event_handler(self._on_command, events.NewMessage(
-            incoming=True, pattern=r"^/(start|help|menu|recent)\b"))
+            incoming=True, pattern=r"^/(start|help|menu|settings|recent)\b"))
         c.add_event_handler(self._on_message, events.NewMessage(
             incoming=True, func=lambda e: e.is_private and not (e.raw_text or "").startswith("/")
             and e.message.grouped_id is None))
@@ -93,6 +94,9 @@ class TelegramBot:
         task = await app.repo.get_task(task_id)
         if not task:
             return
+        def tr(key: str, **kw: Any) -> str:
+            return app.i18n.t(task.get("locale", app.config.current.default_locale), key, **kw)
+        locale = task.get("locale", app.config.current.default_locale)
         chat_id = task["tg_chat_id"]
         meta = task.get("draft_meta") or {}
         media = await app.repo.list_media(task_id)
@@ -113,51 +117,52 @@ class TelegramBot:
                 bio = io.BytesIO(data)
                 bio.name = f"{task_id[:8]}-{m['idx']}{Path(m['asset_key']).suffix}"
                 files.append(bio)
-        if files:
+        for offset in range(0, len(files), 10):
+            batch = files[offset:offset + 10]
             try:
-                await self.client.send_file(chat_id, files[:10])
+                await self.client.send_file(chat_id, batch)
             except Exception:
                 log.warning("sending images failed; sending draft text anyway",
                             extra=ctx(task_id=task_id))
-                unavailable += [int(f.name.split("-")[-1].split(".")[0]) for f in files]
-            files.clear()
+                unavailable += [int(f.name.split("-")[-1].split(".")[0]) for f in batch]
+        files.clear()
 
         lines: list[str] = []
         problems = meta.get("problems") or []
         review = meta.get("review") or []
         if task["status"] == "needs_review":
-            lines.append(self.t("review_header", task_id=task_id))
+            lines.append(tr("review_header", task_id=task_id))
             lines += [f"⛔ {esc(p)}" for p in problems]
             lines += [f"🔎 {esc(r)}" for r in review]
         else:
-            lines.append(self.t("draft_header", task_id=task_id, score=task.get("score"),
+            lines.append(tr("draft_header", task_id=task_id, score=task.get("score"),
                                 length=meta.get("x_length", "?")))
         for w in meta.get("warnings") or []:
             lines.append(f"⚠️ {esc(w)}")
         if media:
             summary = ", ".join(
                 f"#{m['idx']} {_DECISION_ICON.get(m.get('decision') or '', '?')}"
-                f"{m.get('decision') or '-'}" for m in media
+                f"{label(locale, m.get('decision') or '-')}" for m in media
             )
-            lines.append(self.t("media_summary", summary=esc(summary)))
+            lines.append(tr("media_summary", summary=esc(summary)))
             for m in media:
                 if m.get("decision") == "review":
                     lines.append(f"  #{m['idx']}: {esc(m.get('decision_reason') or '')}")
             if any(m.get("ai_generated") for m in media):
-                lines.append(self.t("ai_label"))
+                lines.append(tr("ai_label"))
         if unavailable:
-            lines.append(self.t("media_unavailable",
+            lines.append(tr("media_unavailable",
                                 items=", ".join(f"#{i}" for i in sorted(set(unavailable)))))
-        lines.append(self.t("draft_text_follows"))
+        lines.append(tr("draft_text_follows"))
 
         buttons = []
         if task["status"] == "draft_ready":
-            buttons.append(Button.inline(self.t("btn_approve"), f"t:a:{task_id}".encode()))
+            buttons.append(Button.inline(tr("btn_approve"), f"t:a:{task_id}".encode()))
         elif task["status"] == "needs_review" and not problems:
-            buttons.append(Button.inline(self.t("btn_approve_reviewed"),
+            buttons.append(Button.inline(tr("btn_approve_reviewed"),
                                          f"t:a:{task_id}".encode()))
-        buttons += [Button.inline(self.t("btn_regenerate"), f"t:g:{task_id}".encode()),
-                    Button.inline(self.t("btn_reject"), f"t:r:{task_id}".encode())]
+        buttons += [Button.inline(tr("btn_regenerate"), f"t:g:{task_id}".encode()),
+                    Button.inline(tr("btn_reject"), f"t:r:{task_id}".encode())]
         await self.notify(chat_id, "\n".join(lines), buttons=[buttons])
         if task.get("draft_text"):
             await self.client.send_message(chat_id, task["draft_text"], parse_mode=None,
@@ -172,7 +177,8 @@ class TelegramBot:
         return [
             [Button.inline(self.t("btn_refresh_models"), b"m:refresh"),
              Button.inline(self.t("btn_test_connections"), b"m:health")],
-            [Button.inline(self.t("btn_recent"), b"m:recent")],
+            [Button.inline(self.t("btn_recent"), b"m:recent"),
+             Button.inline(self.t("btn_language"), b"m:language")],
         ]
 
     async def _on_command(self, event: events.NewMessage.Event) -> None:
@@ -184,7 +190,7 @@ class TelegramBot:
         cmd = event.pattern_match.group(1)
         if cmd in ("start", "help"):
             await event.respond(esc(self.t("welcome")), buttons=self._menu())
-        elif cmd == "menu":
+        elif cmd in ("menu", "settings"):
             await event.respond(self.t("menu_title"), buttons=self._menu())
         elif cmd == "recent":
             await event.respond(await self._recent_text())
@@ -205,9 +211,9 @@ class TelegramBot:
     async def _intake(self, event: Any, messages: list[Any]) -> None:
         try:
             await self.app.intake(event.chat_id, event.sender_id, messages)
-        except Exception as exc:
+        except Exception:
             log.exception("intake failed")
-            await event.respond(self.t("action_failed", result=esc(f"intake failed: {exc}")))
+            await event.respond(self.t("action_failed", result=self.t("generic_failure")))
 
     async def _on_callback(self, event: events.CallbackQuery.Event) -> None:
         if not self._authorized(event.sender_id):
@@ -216,16 +222,30 @@ class TelegramBot:
         data = event.data.decode(errors="ignore")
         ops = self.app.ops
         try:
-            if data == "m:refresh":
+            if data == "m:language":
+                await event.answer()
+                await event.respond(self.t("language_settings"), buttons=[[
+                    Button.inline("English (US)", b"m:locale:en-US"),
+                    Button.inline("简体中文", b"m:locale:zh-CN")]])
+            elif data.startswith("m:locale:"):
+                locale = data.removeprefix("m:locale:")
+                if locale not in self.app.i18n.codes:
+                    await event.answer(self.t("generic_failure"), alert=True)
+                    return
+                await self.app.config.update({"default_locale": locale})
+                await event.answer(self.t("locale_saved"))
+                await event.respond(self.t("menu_title"), buttons=self._menu())
+            elif data == "m:refresh":
                 await event.answer(self.t("working"))
                 summary = await ops.refresh_models()
-                await event.respond(self.t("models_refreshed", summary=esc(summary)))
+                await event.respond(self.t("models_refreshed", summary=esc(ops.model_summary(summary))))
             elif data == "m:health":
                 await event.answer(self.t("working"))
                 results = await ops.test_connections()
                 lines = [self.t("health_title")] + [
-                    f"{'✅' if r.ok else '❌'} <b>{esc(r.name)}</b> {r.latency_ms}ms — "
-                    f"{esc(r.detail)}" for r in results
+                    f"{'✅' if r.ok else '❌'} <b>{esc(r.name)}</b> {r.latency_ms} "
+                    f"{esc(self.t('admin_ms'))} — "
+                    f"{esc(self.t('connection_ok' if r.ok else 'connection_failed'))}" for r in results
                 ]
                 await event.respond("\n".join(lines))
             elif data == "m:recent":
@@ -236,9 +256,9 @@ class TelegramBot:
                 await self._task_action(event, action, task_id)
             else:
                 await event.answer()
-        except Exception as exc:
+        except Exception:
             log.exception("callback failed", extra=ctx(data=data))
-            await event.respond(self.t("action_failed", result=esc(exc)))
+            await event.respond(self.t("action_failed", result=self.t("generic_failure")))
 
     async def _task_action(self, event: events.CallbackQuery.Event, action: str, task_id: str
                            ) -> None:
@@ -272,5 +292,5 @@ class TelegramBot:
         lines = [self.t("recent_title")]
         for t in tasks:
             preview = (t.get("preview") or "").replace("\n", " ")[:60]
-            lines.append(f"<code>{t['id'][:8]}</code> {esc(t['status'])} — {esc(preview)}")
+            lines.append(f"<code>{t['id'][:8]}</code> {esc(label(self.app.config.current.default_locale, t['status']))} — {esc(preview)}")
         return "\n".join(lines)

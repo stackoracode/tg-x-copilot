@@ -1,0 +1,58 @@
+{
+  "_comment": "Jev System One 初筛问题，保持类型与内部问题标识不变。",
+  "value": {
+    "type": "score",
+    "instructions": "这条 Telegram 内容作为面向 $market 市场的原创 X 帖子事实基础，有多大实用价值？",
+    "criteria": [
+      "垃圾信息、广告、赠奖、问候或私人聊天，没有实用信息",
+      "模糊断言或观点，几乎没有具体事实",
+      "有些具体事实，但较小众或需要大量背景",
+      "具体、有新闻价值或实用的信息，适合广泛受众"
+    ]
+  },
+  "content_type": {
+    "type": "choice",
+    "instructions": "这条消息属于哪种内容类型？",
+    "criteria": {
+      "news": "近期事件、发布或公告",
+      "practical": "操作方法、提示或可直接行动的信息",
+      "analysis": "数据、研究发现或机制解释",
+      "promo": "广告、推销、推荐返利、赠奖或频道推广",
+      "opinion": "没有新事实的评论或观点",
+      "chat": "私人消息、问候或闲聊",
+      "other": null
+    }
+  },
+  "promotional": {
+    "type": "noul",
+    "instructions": "内容主要目的是否为推销、广告或推广？",
+    "criteria": {
+      "true": "主要目的为广告、折扣、推荐返利、付费群组或赠奖",
+      "false": "主要目的是提供信息，即使提到产品或公司"
+    }
+  },
+  "risky": {
+    "type": "noul",
+    "instructions": "在 X 转述此内容是否有法律、安全或声誉风险？",
+    "criteria": {
+      "true": "含医疗、法律或金融建议，血腥内容，或指控可识别人物违法",
+      "false": "普通信息，没有此类风险"
+    }
+  },
+  "unverified": {
+    "type": "noul",
+    "instructions": "内容是否把传闻或未核实主张作为既定事实？",
+    "criteria": {
+      "true": "匿名、推测或无来源的主张被当成事实",
+      "false": "主张有明确来源、可核实，或标明为观点/传闻"
+    }
+  },
+  "media_useful": {
+    "type": "noul",
+    "instructions": "根据文案及附件描述，图片是否可能增加有关此主题的信息？",
+    "criteria": {
+      "true": "素材可能展示主题、数据、文档或所讨论的产品",
+      "false": "素材可能是纯装饰、标志、表情图或无关内容"
+    }
+  }
+}

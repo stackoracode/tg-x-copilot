@@ -1,48 +1,53 @@
 {% extends "base.html" %}
-{% block title %}Settings{% endblock %}
+{% block title %}{{ t('admin_Settings') }}{% endblock %}
 {% block content %}
 <div class="card">
-  <h3 style="margin-top:0">Runtime settings</h3>
-  <p class="muted">Saved to MySQL and applied immediately (clients are rebuilt). API keys are environment-only and cannot be edited here. "env" means the value comes from <code>.env</code>.</p>
+  <h3 style="margin-top:0">{{ t('admin_Runtime settings') }}</h3>
+  <p class="muted">{{ t('admin_Saved to MySQL and applied immediately (clients are rebuilt). API keys are environment-only and cannot be edited here. "env" means the value comes from') }} <code>.env</code>.</p>
   <form method="post" action="/settings">
     <table>
-      <tr><th>Key</th><th>Value</th><th>Source</th></tr>
+      <tr><th>{{ t('admin_Key') }}</th><th>{{ t('admin_Value') }}</th><th>{{ t('admin_Source') }}</th></tr>
       {% for r in rows %}
       <tr>
         <td><code>{{ r.key }}</code></td>
         <td>
-          {% if r.is_bool %}
+          {% if r.key == 'default_locale' %}
+            <select name="default_locale">
+              <option value="en-US" {% if r.value == 'en-US' %}selected{% endif %}>English (US)</option>
+              <option value="zh-CN" {% if r.value == 'zh-CN' %}selected{% endif %}>简体中文</option>
+            </select>
+          {% elif r.is_bool %}
             <input type="hidden" name="{{ r.key }}__bool" value="1">
             <input type="checkbox" name="{{ r.key }}" value="true" {% if r.value == "True" %}checked{% endif %}>
           {% else %}
             <input type="text" name="{{ r.key }}" value="{{ r.value }}" {% if r.key.startswith("models.") %}list="model-ids"{% endif %} autocomplete="off">
           {% endif %}
         </td>
-        <td class="muted">{% if r.overridden %}db{% else %}env{% endif %}</td>
+        <td class="muted">{% if r.overridden %}{{ t('admin_db') }}{% else %}{{ t('admin_env') }}{% endif %}</td>
       </tr>
       {% endfor %}
     </table>
-    <datalist id="model-ids">{% for m in models %}<option value="{{ m.model_id }}">{{ m.provider }} · {{ (m.capabilities or [])|join(",") }}</option>{% endfor %}</datalist>
-    <p><button class="primary" type="submit">Save</button></p>
+    <datalist id="model-ids">{% for m in models %}<option value="{{ m.model_id }}">{{ m.provider }} · {% for cap in m.capabilities or [] %}{{ a(cap) }}{% if not loop.last %}, {% endif %}{% endfor %}</option>{% endfor %}</datalist>
+    <p><button class="primary" type="submit">{{ t('admin_Save') }}</button></p>
   </form>
-  <p class="muted">To return a key to its env value, reset it:</p>
+  <p class="muted">{{ t('admin_To return a key to its env value, reset it:') }}</p>
   {% for r in rows if r.overridden %}
     <form class="inline" method="post" action="/settings/reset/{{ r.key }}"><button>{{ r.key }}</button></form>
   {% endfor %}
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0">Models ({{ models|length }})</h3>
-  <form class="inline" method="post" action="/actions/refresh-models"><button>🔄 Refresh models</button></form>
-  <a href="/actions/health"><button type="button">🩺 Test connections</button></a>
+  <h3 style="margin-top:0">{{ t('admin_Models') }} ({{ models|length }})</h3>
+  <form class="inline" method="post" action="/actions/refresh-models"><button>{{ t('btn_refresh_models') }}</button></form>
+  <a href="/actions/health"><button type="button">{{ t('btn_test_connections') }}</button></a>
   <table style="margin-top:12px">
-    <tr><th>Provider</th><th>Model</th><th>Capabilities</th><th>Last seen</th></tr>
-    {% for m in models %}<tr><td>{{ m.provider }}</td><td><code>{{ m.model_id }}</code></td><td>{{ (m.capabilities or [])|join(", ") }}</td><td class="muted">{{ m.last_seen_at }}</td></tr>{% endfor %}
+    <tr><th>{{ t('admin_Provider') }}</th><th>{{ t('admin_Model') }}</th><th>{{ t('admin_Capabilities') }}</th><th>{{ t('admin_Last seen') }}</th></tr>
+    {% for m in models %}<tr><td>{{ m.provider }}</td><td><code>{{ m.model_id }}</code></td><td>{% for cap in m.capabilities or [] %}{{ a(cap) }}{% if not loop.last %}, {% endif %}{% endfor %}</td><td class="muted">{{ m.last_seen_at }}</td></tr>{% endfor %}
   </table>
 </div>
 
 <div class="card">
-  <h3 style="margin-top:0">Bootstrap settings (env only, read-only)</h3>
+  <h3 style="margin-top:0">{{ t('admin_Bootstrap settings (env only, read-only)') }}</h3>
   <pre>{{ bootstrap | tojson(indent=2) }}</pre>
 </div>
 {% endblock %}

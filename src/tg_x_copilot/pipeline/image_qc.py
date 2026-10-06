@@ -13,25 +13,30 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from .. import prompts
+from ..i18n import t
 from ..models import ImageQC
-from .guards import numbers_in
+from .guards import numbers_in, wrong_language
 
 QCMode = Literal["enhance", "localize", "regenerate"]
 
 _CHECKS = (
     ("text", "text_consistent"),
+    ("language", "language_consistent"),
     ("numbers", "numbers_consistent"),
     ("dates", "dates_consistent"),
     ("names", "names_consistent"),
+    ("brands", "brands_consistent"),
     ("people", "people_consistent"),
     ("watermarks", "watermarks_ok"),
     ("facts", "facts_consistent"),
 )
 
 
-def qc_verdict(qc: ImageQC, *, allowed_texts: list[str]) -> tuple[bool, str]:
+def qc_verdict(qc: ImageQC, *, allowed_texts: list[str], locale: str = "en-US") -> tuple[bool, str]:
     """Pure decision: (passed, human-readable reason)."""
     failed = [label for label, attr in _CHECKS if not getattr(qc, attr)]
+    if wrong_language(qc.rendered_text, locale) and "language" not in failed:
+        failed.append("language")
     allowed: set[str] = set()
     for text in allowed_texts:
         allowed |= numbers_in(text)
@@ -39,25 +44,24 @@ def qc_verdict(qc: ImageQC, *, allowed_texts: list[str]) -> tuple[bool, str]:
 
     reasons: list[str] = []
     if failed:
-        reasons.append("failed checks: " + ", ".join(failed))
+        reasons.append(t(locale, "qc_checks", items=", ".join(t(locale, "check_" + f) for f in failed)))
     if unexpected:
-        reasons.append("numbers not in reference: " + ", ".join(unexpected))
+        reasons.append(t(locale, "qc_numbers", items=", ".join(unexpected)))
     if qc.issues:
-        reasons.append("issues: " + "; ".join(qc.issues[:5]))
+        reasons.append(t(locale, "qc_issues", items="; ".join(qc.issues[:5])))
     if qc.passed and not reasons:
-        return True, "QC passed"
-    return False, " | ".join(reasons) or "QC model did not pass the image"
+        return True, t(locale, "qc_pass")
+    return False, " | ".join(reasons) or t(locale, "qc_rejected")
 
 
 def build_messages(mode: QCMode, *, locale: str, market: str, language_name: str, facts: str,
                    reference_text: str, candidate_url: str, reference_url: str | None
                    ) -> list[dict[str, Any]]:
     rules = prompts.render_json("image_qc_modes", locale, language_name=language_name)[mode]
-    note = ("The first image is the REFERENCE (original), the second is the CANDIDATE."
-            if reference_url else "The attached image is the CANDIDATE.")
+    note = t(locale, "qc_images_pair" if reference_url else "qc_candidate")
     p = prompts.render("image_qc", locale, market=market, language_name=language_name,
-                       mode=mode, mode_rules=rules, facts=facts or "(none)",
-                       reference_text=reference_text or "(none)", images_note=note)
+                       mode=mode, mode_rules=rules, facts=facts or t(locale, "none"),
+                       reference_text=reference_text or t(locale, "none"), images_note=note)
     content: list[dict[str, Any]] = [{"type": "text", "text": p.user}]
     if reference_url:
         content.append({"type": "image_url", "image_url": {"url": reference_url}})

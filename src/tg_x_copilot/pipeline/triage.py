@@ -17,6 +17,7 @@ from typing import Any
 from .. import prompts
 from ..clients.jev import JevResponse
 from ..config import JevSettings
+from ..i18n import label, t
 from ..models import InputEnvelope, TriageResult
 
 MIN_TEXT_CHARS = 20
@@ -30,7 +31,6 @@ def build_state(env: InputEnvelope, source_info: str) -> dict[str, Any]:
         kinds[m.kind.value] = kinds.get(m.kind.value, 0) + 1
     return {
         "post_text": env.text[:20000],
-        "source": source_info,
         "links": env.urls[:10],
         "attachments": ", ".join(f"{n} {k}" for k, n in kinds.items()) or "none",
         "target_audience": f"X (Twitter) readers in the {env.market} market",
@@ -44,7 +44,7 @@ def build_questions(env: InputEnvelope, locale: str) -> dict[str, dict[str, Any]
     return questions
 
 
-def decide_route(resp: JevResponse, cfg: JevSettings, *, has_text: bool, has_media: bool
+def decide_route(resp: JevResponse, cfg: JevSettings, *, has_text: bool, has_media: bool, locale: str = "en-US"
                  ) -> TriageResult:
     a = resp.answers
     value_ans = a["value"]
@@ -66,32 +66,32 @@ def decide_route(resp: JevResponse, cfg: JevSettings, *, has_text: bool, has_med
 
     if not has_text:
         result.escalated = True
-        result.reasons.append("Too little text for Jev; vision + LLM decide.")
+        result.reasons.append(t(locale, "jev_no_text"))
         return result
 
     if flags.get("promotional", 0.0) >= cfg.promo_skip:
         result.route = "skip"
-        result.reasons.append(f"Promotional (p={flags['promotional']:.2f}).")
+        result.reasons.append(t(locale, "jev_promo", value=f"{flags['promotional']:.2f}"))
         return result
     if confident and value < cfg.min_value:
         result.route = "skip"
-        result.reasons.append(f"Low value {value:.2f} with confidence {conf:.2f}.")
+        result.reasons.append(t(locale, "jev_low", value=f"{value:.2f}", confidence=f"{conf:.2f}"))
         return result
     if (ctype and ctype.choice in _SKIP_TYPES and ctype.confidence is not None
             and ctype.confidence >= cfg.confidence_floor):
         result.route = "skip"
-        result.reasons.append(f"Content type '{ctype.choice}' (confidence {ctype.confidence:.2f}).")
+        result.reasons.append(t(locale, "jev_type", kind=label(locale, ctype.choice), confidence=f"{ctype.confidence:.2f}"))
         return result
 
     for flag in ("risky", "unverified"):
         if flags.get(flag, 0.0) >= cfg.risk_review:
             result.route = "review"
-            result.reasons.append(f"{flag} p={flags[flag]:.2f}")
+            result.reasons.append(t(locale, "jev_flag", flag=label(locale, flag), value=f"{flags[flag]:.2f}"))
     if not confident:
         result.escalated = True
-        result.reasons.append("Jev uncertain about value; main LLM evaluation decides.")
+        result.reasons.append(t(locale, "jev_uncertain"))
     if has_media and not result.use_media:
-        result.reasons.append(f"Media judged not useful (p={media_p:.2f}); not analyzed.")
+        result.reasons.append(t(locale, "jev_media", value=f"{media_p:.2f}"))
     return result
 
 

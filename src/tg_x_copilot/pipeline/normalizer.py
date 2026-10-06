@@ -85,21 +85,28 @@ def normalize(messages: Iterable[Any], *, chat_id: int, user_id: int, locale: st
               market: str) -> InputEnvelope:
     msgs = sorted((m for m in messages if m is not None), key=lambda m: m.id)
     texts: list[str] = []
+    message_texts: list[str] = []
+    message_urls: list[list[str]] = []
     urls: list[str] = []
     media: list[SourceMedia] = []
     forwards: list[ForwardOrigin] = []
     grouped: list[int] = []
     for m in msgs:
         text = (getattr(m, "raw_text", None) or getattr(m, "message", None) or "").strip()
+        message_texts.append(text)
+        links = _urls_of(m)
+        message_urls.append(links)
         if text and text not in texts:  # albums often repeat the caption
             texts.append(text)
-        for u in _urls_of(m):
+        for u in links:
             if u not in urls:
                 urls.append(u)
         item = _media_of(m)
-        if item:
-            media.append(item)
         fwd = _forward_of(m)
+        if item:
+            item.forwarded = fwd is not None
+            item.source_chat_id = fwd.chat_id if fwd else None
+            media.append(item)
         if fwd and fwd not in forwards:
             forwards.append(fwd)
         gid = getattr(m, "grouped_id", None)
@@ -111,6 +118,8 @@ def normalize(messages: Iterable[Any], *, chat_id: int, user_id: int, locale: st
         message_ids=[m.id for m in msgs],
         grouped_ids=grouped,
         text="\n\n".join(texts),
+        message_texts=message_texts,
+        message_urls=message_urls,
         urls=urls,
         media=media,
         forwards=forwards,

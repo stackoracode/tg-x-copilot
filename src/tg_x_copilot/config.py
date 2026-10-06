@@ -164,7 +164,7 @@ class AppSettings(BaseSettings):
 
     log_level: str = "INFO"
     log_json: bool = True
-    default_locale: str = "en-US"
+    default_locale: Literal["en-US", "zh-CN"] = "en-US"
     market: str = "US"
     shutdown_grace_seconds: float = 30.0
 

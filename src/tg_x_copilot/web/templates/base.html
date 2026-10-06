@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="{{ locale }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -40,9 +40,18 @@
 <body>
 <header>
   <span class="brand">tg-x-copilot</span>
-  <a href="/">Tasks</a>
-  <a href="/settings">Settings</a>
-  <a href="/actions/health">Health</a>
+  <a href="/">{{ t('admin_Tasks') }}</a>
+  <a href="/settings">{{ t('admin_Settings') }}</a>
+  <a href="/actions/health">{{ t('admin_Health') }}</a>
+  <form method="post" action="/settings/locale" class="inline">
+    <label>{{ t('admin_Language') }}
+      <select name="locale" aria-label="{{ t('admin_Language') }}">
+        <option value="en-US" {% if locale == 'en-US' %}selected{% endif %}>English (US)</option>
+        <option value="zh-CN" {% if locale == 'zh-CN' %}selected{% endif %}>简体中文</option>
+      </select>
+    </label>
+    <button type="submit">{{ t('admin_Save') }}</button>
+  </form>
 </header>
 <main>
   {% if flash %}<div class="flash">{{ flash }}</div>{% endif %}

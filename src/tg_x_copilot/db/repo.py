@@ -48,6 +48,13 @@ class Repository:
         )
         return task_id
 
+    async def set_task_locale(self, task_id: str, locale: str, market: str) -> None:
+        """Regeneration adopts current language; original source content stays intact."""
+        await self.db.execute(
+            "UPDATE tasks SET locale=%s, market=%s, envelope=JSON_SET(envelope,"
+            " '$.locale', %s, '$.market', %s) WHERE id=%s",
+            (locale, market, locale, market, task_id))
+
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
         row = await self.db.fetchone("SELECT * FROM tasks WHERE id=%s", (task_id,))
         return _decode(row, _TASK_JSON)

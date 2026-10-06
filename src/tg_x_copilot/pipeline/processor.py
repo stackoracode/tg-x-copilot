@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from .. import prompts
 from ..clients.openai_compat import image_data_url
 from ..config import AppSettings
-from ..i18n import Locale
+from ..i18n import Locale, label, t
 from ..logging_setup import ctx as log_ctx
 from ..logging_setup import mask
 from ..models import (
@@ -29,8 +29,10 @@ from ..models import (
     MediaResult, RewriteResult, SourceMedia, TaskStatus, TriageResult,
 )
 from ..services.storage import StorageBudgetExceeded
+from .cleaning import clean_bundle
 from .guards import GuardReport, XRules, check_rewrite, x_length
-from .image_policy import decide
+from .language import is_localized
+from .image_policy import decide, media_is_owned
 from .image_qc import QCMode, build_messages, qc_verdict
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
@@ -77,14 +79,8 @@ class Pipeline:
 
     @staticmethod
     def _source_info(env: InputEnvelope) -> str:
-        if not env.forwards:
-            return "sent directly by the operator (not forwarded)"
-        parts = []
-        for f in env.forwards[:5]:
-            bits = [str(f.chat_id) if f.chat_id else None, f.sender_name,
-                    f.date.date().isoformat() if f.date else None]
-            parts.append(" / ".join(b for b in bits if b) or "unknown")
-        return "forwarded from: " + "; ".join(parts)
+        # Attribution is rights/audit metadata, never editorial content or Jev input.
+        return ""
 
     @staticmethod
     def _base_vars(env: InputEnvelope, locale: Locale) -> dict[str, Any]:
@@ -135,7 +131,12 @@ class Pipeline:
         await self._event(task_id, "start", f"attempt {task['attempts'] + 1}",
                           data={"messages": len(env.message_ids), "media": len(env.media)})
 
-        # 1. Triage: text only, before any download or LLM spend. Jev is optional.
+        # Clean each message before Jev; keep original envelope/source text for audit.
+        await repo.set_stage(task_id, "clean")
+        env, clean_fallback = await clean_bundle(env, self.app)
+        await self._event(task_id, "clean", "canonical content prepared",
+                          data={"text": env.text, "urls": env.urls})
+        # 1. Jev sees only core content, before any media download.
         await repo.set_stage(task_id, "triage")
         triage = await self._triage(task_id, env, locale)
         await repo.save_triage(task_id, triage)
@@ -150,13 +151,14 @@ class Pipeline:
         images, dup_warnings = await self._load_media(task_id, env, cfg, use=triage.use_media)
         try:
             await self._run_editorial(task_id, env, locale, cfg, triage, images, dup_warnings,
-                                      started)
+                                      started, clean_fallback=clean_fallback)
         finally:
             images.clear()  # drop references to downloaded bytes promptly
 
     async def _run_editorial(self, task_id: str, env: InputEnvelope, locale: Locale,
                              cfg: AppSettings, triage: TriageResult, images: list[LoadedImage],
-                             dup_warnings: list[str], started: float) -> None:
+                             dup_warnings: list[str], started: float, *,
+                             clean_fallback: bool = False) -> None:
         repo = self.app.repo
         await repo.set_stage(task_id, "vision")
         analyses = await self._analyze(task_id, env, images, locale, cfg)
@@ -168,12 +170,14 @@ class Pipeline:
                           f"suitable={evaluation.suitable} value={evaluation.value_score:.2f}: "
                           f"{evaluation.reason}", data=evaluation.model_dump())
         if not evaluation.suitable:
-            await self._skip(task_id, env, f"editor: {evaluation.reason}")
+            await self._skip(task_id, env, evaluation.reason)
             return
 
         await repo.set_stage(task_id, "rewrite")
-        rules = XRules.from_db(await repo.get_rules(env.locale, env.market))
-        hooks = await repo.get_hooks(env.locale, env.market)
+        knowledge = prompts.render_json("knowledge", locale.code)
+        rules = XRules.from_db({**knowledge["rules"],
+                               **await repo.get_rules(env.locale, env.market)})
+        hooks = await repo.get_hooks(env.locale, env.market) or knowledge["hooks"]
         rewrite, report = await self._rewrite(task_id, env, evaluation, analyses, rules, hooks,
                                               locale, cfg)
 
@@ -181,22 +185,22 @@ class Pipeline:
         usable = [img for img in images if img.idx in analyses]
         for img in usable[rules.max_images:]:
             await repo.update_media_decision(task_id, img.idx, ImageDecision.REVIEW.value,
-                                              f"Over the {rules.max_images}-image limit.")
+                                              t(env.locale, "media_limit", count=rules.max_images))
         outcomes = await self._process_images(
             task_id, env, usable[: rules.max_images], analyses, rewrite, evaluation, locale, cfg
         )
 
         # 3. Only now, with a draft in hand, persist what the operator needs.
         await repo.set_stage(task_id, "persist")
-        media_results = await self._persist(task_id, images, outcomes, analyses, cfg)
+        media_results = await self._persist(task_id, images, outcomes, analyses, cfg, locale=locale.code)
 
         problems = list(report.problems)  # blocking: cannot be approved
         review = list(report.review)  # must be checked by a human, then may be approved
         if triage.route == "review":
-            review.append("Jev flagged for human review: " + " ".join(triage.reasons))
+            review.append(t(env.locale, "jev_review", reason=" ".join(triage.reasons)))
         media_review = [r for r in media_results if r.decision == ImageDecision.REVIEW]
         if media_review:
-            review.append(f"{len(media_review)} image(s) need review (see image decisions).")
+            review.append(t(env.locale, "images_review", count=len(media_review)))
         status = (TaskStatus.DRAFT_READY if not problems and not review
                   else TaskStatus.NEEDS_REVIEW)
         meta = {
@@ -205,7 +209,8 @@ class Pipeline:
             "added_value": rewrite.added_value,
             "problems": problems,
             "review": review,
-            "warnings": report.warnings + dup_warnings,
+            "warnings": report.warnings + dup_warnings +
+                        ([t(env.locale, "clean_failed")] if clean_fallback else []),
             "risks": evaluation.risks,
             "media": [r.model_dump(mode="json") for r in media_results],
             "x_length": x_length(rewrite.post),
@@ -227,7 +232,7 @@ class Pipeline:
                 await self.app.telegram.notify(
                     task["tg_chat_id"],
                     self.app.i18n.t(task["locale"], "failed", task_id=task_id,
-                                    error=html.escape(error[:300], quote=False)),
+                                    error=t(task["locale"], "task_failure")),
                 )
         except Exception:
             log.exception("failed to record task failure")
@@ -261,12 +266,12 @@ class Pipeline:
         has_media = bool(env.media)
         cfg = self.app.config.current.jev
         if not cfg.enabled:
-            return without_jev("Jev disabled; main LLM decides.", has_media=has_media)
+            return without_jev(t(env.locale, "jev_disabled"), has_media=has_media)
         if not self.app.hub.jev.configured:
-            return without_jev("Jev not configured (JEV__API_KEY unset); main LLM decides.",
+            return without_jev(t(env.locale, "jev_unconfigured"),
                                has_media=has_media)
         if not has_usable_text(env):
-            return without_jev("No usable text for Jev (text-only model); vision + LLM decide.",
+            return without_jev(t(env.locale, "jev_no_text"),
                                has_media=has_media)
         state = build_state(env, self._source_info(env))
         questions = build_questions(env, locale.code)
@@ -285,8 +290,8 @@ class Pipeline:
             log.warning("jev unavailable; falling back to main LLM", extra=log_ctx(error=reason))
             await self._event(task_id, "triage", reason + "; falling back to main LLM",
                               level="warning")
-            return without_jev(reason + "; main LLM decides.", has_media=has_media)
-        return decide_route(resp, cfg, has_text=True, has_media=has_media)
+            return without_jev(t(env.locale, "jev_unavailable"), has_media=has_media)
+        return decide_route(resp, cfg, has_text=True, has_media=has_media, locale=env.locale)
 
     async def _load_media(self, task_id: str, env: InputEnvelope, cfg: AppSettings, *,
                           use: bool) -> tuple[list[LoadedImage], list[str]]:
@@ -303,7 +308,7 @@ class Pipeline:
             if use and sm.kind in _IMAGE_KINDS and (sm.size or 0) <= max_bytes
         ]
         downloaded: dict[int, bytes] = {}
-        download_error = "Could not download from Telegram (deleted or unavailable)."
+        download_error = t(env.locale, "media_deleted")
         if wanted and self.app.telegram:
             try:
                 async with self.app.limits.io:
@@ -314,19 +319,19 @@ class Pipeline:
                 download_error = mask(f"Media download failed ({type(exc).__name__}: {exc}); "
                                       "continuing with text only.")[:300]
                 await self._event(task_id, "media", download_error, level="warning")
+                download_error = t(env.locale, "media_download")
 
         loaded: list[LoadedImage] = []
         warnings: list[str] = []
         for idx, sm in enumerate(env.media):
             if not use:
-                await review(idx, sm, "Not analyzed: Jev judged the media not useful.")
+                await review(idx, sm, t(env.locale, "media_unused"))
                 continue
             if sm.kind not in _IMAGE_KINDS:
-                await review(idx, sm, f"Unsupported media type in MVP ({sm.kind.value}); "
-                                      "handle manually.")
+                await review(idx, sm, t(env.locale, "media_unsupported"))
                 continue
             if (sm.size or 0) > max_bytes:
-                await review(idx, sm, f"File too large ({sm.size} bytes).")
+                await review(idx, sm, t(env.locale, "media_large", size=sm.size))
                 continue
             data = downloaded.pop(sm.message_id, None)
             if data is None:
@@ -334,14 +339,14 @@ class Pipeline:
                 continue
             blob = await asyncio.to_thread(inspect_image, data)
             if blob is None:
-                await review(idx, sm, "File is not a readable image.")
+                await review(idx, sm, t(env.locale, "media_unreadable"))
                 continue
             await repo.upsert_media(task_id, idx, message_id=sm.message_id, kind=sm.kind.value,
                                     mime=blob.mime, size_bytes=blob.size, width=blob.width,
                                     height=blob.height, source_sha256=blob.sha256)
             for prev in await repo.previous_uses(blob.sha256, task_id):
-                warnings.append(f"Image #{idx} was already forwarded in task "
-                                f"{prev['task_id'][:8]} ({prev['status']}).")
+                warnings.append(t(env.locale, "media_duplicate", idx=idx, task_id=prev["task_id"][:8],
+                                  status=label(env.locale, prev["status"])))
                 break
             loaded.append(LoadedImage(idx, blob, sm))
 
@@ -353,11 +358,10 @@ class Pipeline:
                        locale: Locale, cfg: AppSettings) -> dict[int, ImageAnalysis]:
         if not images:
             return {}
-        owned_hint = ", ".join(str(i) for i in cfg.pipeline.owned_source_ids) or "none configured"
 
         async def one(img: LoadedImage) -> tuple[int, ImageAnalysis]:
             p = prompts.render("vision_analyze", locale.code, **self._base_vars(env, locale),
-                               owned_hint=owned_hint, text=env.text[:3000] or "(no text)")
+                               text=env.text[:3000] or t(locale.code, "empty_text"))
             messages = [
                 {"role": "system", "content": p.system},
                 {"role": "user", "content": [
@@ -371,6 +375,9 @@ class Pipeline:
                     cfg.models.vision_model, messages, ImageAnalysis,
                     json_mode=cfg.models.json_mode,
                 )
+            if not await is_localized([analysis.description, analysis.reason,
+                                       *analysis.source_facts], locale, self.app):
+                raise ValueError("vision narrative has wrong language")
             await self.app.repo.update_media_analysis(task_id, img.idx, analysis)
             return img.idx, analysis
 
@@ -383,7 +390,7 @@ class Pipeline:
                 reason = mask(f"Vision analysis failed: {res}")[:500]
                 await self._event(task_id, "vision", f"image {img.idx}: {reason}", level="warning")
                 await self.app.repo.update_media_decision(
-                    task_id, img.idx, ImageDecision.REVIEW.value, reason)
+                    task_id, img.idx, ImageDecision.REVIEW.value, t(env.locale, "vision_failed"))
             else:
                 analyses[res[0]] = res[1]
         await self._event(task_id, "vision", f"analyzed {len(analyses)}/{len(images)} image(s)",
@@ -395,20 +402,25 @@ class Pipeline:
                         cfg: AppSettings) -> Evaluation:
         notes = "\n".join(
             f"- Image {i}: {a.image_type}; {a.description}"
-            + (f"; text ({a.text_language}): {a.extracted_text[:300]}" if a.contains_text else "")
+            + (f"; text ({a.text_language}): {a.extracted_text[:8000]}" if a.contains_text else "")
             for i, a in sorted(analyses.items())
-        ) or "(none)"
+        ) or t(locale.code, "none")
         p = prompts.render(
             "evaluate", locale.code, **self._base_vars(env, locale),
             source_info=self._source_info(env), triage=triage.summary,
-            urls=", ".join(env.urls[:10]) or "none", text=env.text[:8000] or "(no text)",
+            urls=", ".join(env.urls[:10]) or "none", text=env.text[:8000] or t(locale.code, "empty_text"),
             image_notes=notes,
         )
-        async with self.app.limits.text:
-            return await self.app.hub.cpa.chat_json(
-                cfg.models.text_model, p.messages(), Evaluation,
-                temperature=cfg.models.text_temperature, json_mode=cfg.models.json_mode,
-            )
+        for _ in range(max(1, cfg.pipeline.max_rewrite_attempts)):
+            async with self.app.limits.text:
+                result = await self.app.hub.cpa.chat_json(
+                    cfg.models.text_model, p.messages(), Evaluation,
+                    temperature=cfg.models.text_temperature, json_mode=cfg.models.json_mode)
+            if await is_localized([result.audience, result.angle, result.reason,
+                                   *result.key_facts, *result.background_points, *result.risks],
+                                  locale, self.app):
+                return result
+        raise ValueError("editorial narrative has wrong language")
 
     async def _rewrite(self, task_id: str, env: InputEnvelope, evaluation: Evaluation,
                        analyses: dict[int, ImageAnalysis], rules: XRules,
@@ -417,7 +429,7 @@ class Pipeline:
         # Source-derived text counts as verified; everything the LLM produced does not.
         verified = [a.extracted_text for a in analyses.values() if a.extracted_text]
         unverified = evaluation.key_facts + evaluation.background_points
-        hooks_text = "\n".join(f"- {h['name']}: {h['pattern']} e.g. \"{h['example']}\""
+        hooks_text = "\n".join(f"- {h['pattern']} {t(locale.code, 'hook_example')} \"{h['example']}\""
                                for h in hooks) or "- (none)"
 
         def bullet(items: list[str]) -> str:
@@ -434,7 +446,7 @@ class Pipeline:
                 hooks=hooks_text, angle=evaluation.angle, audience=evaluation.audience,
                 key_facts=bullet(evaluation.key_facts),
                 background_points=bullet(evaluation.background_points),
-                risks=bullet(evaluation.risks), text=env.text[:6000] or "(no text)",
+                risks=bullet(evaluation.risks), text=env.text[:6000] or t(locale.code, "empty_text"),
                 feedback=feedback,
             )
             async with self.app.limits.text:
@@ -443,7 +455,16 @@ class Pipeline:
                     temperature=cfg.models.text_temperature, json_mode=cfg.models.json_mode,
                 )
             report = check_rewrite(result, source_text=env.text, rules=rules,
-                                   verified_facts=verified, unverified_facts=unverified)
+                                   verified_facts=verified, unverified_facts=unverified, locale=locale.code)
+            language_ok = await is_localized(
+                [result.post, result.hook, result.added_value, result.image_brief,
+                 *(claim.text for claim in result.claims)], locale, self.app)
+            if not language_ok:
+                # Never retain an invalid-language candidate as the best publishable draft.
+                feedback = t(locale.code, "guard_language")
+                await self._event(task_id, "rewrite", "wrong-language candidate rejected",
+                                  level="warning")
+                continue
             await self._event(
                 task_id, "rewrite",
                 f"attempt {attempt}: {'ok' if report.ok else '; '.join(report.problems)}",
@@ -455,12 +476,10 @@ class Pipeline:
                 best = (result, report)
             if report.ok:
                 break
-            feedback = (
-                "Your previous draft was rejected. Fix ALL of these problems:\n- "
-                + "\n- ".join(report.problems)
-                + f"\n\nPrevious draft:\n{result.post}"
-            )
-        assert best is not None
+            feedback = t(locale.code, "retry_feedback",
+                         problems="\n- ".join(report.problems), post=result.post)
+        if best is None:
+            raise ValueError("no localized draft after rewrite retries")
         return best
 
     async def _process_images(self, task_id: str, env: InputEnvelope, images: list[LoadedImage],
@@ -469,10 +488,6 @@ class Pipeline:
                               ) -> list[ImageOutcome]:
         """Decide and produce image outputs in memory. Nothing is uploaded here."""
         owned_ids = set(cfg.pipeline.owned_source_ids)
-        if env.forwards:
-            owned = bool(env.source_chat_ids) and env.source_chat_ids <= owned_ids
-        else:
-            owned = cfg.pipeline.direct_uploads_owned
         m = cfg.models
         hub, limits = self.app.hub, self.app.limits
 
@@ -484,9 +499,11 @@ class Pipeline:
 
         async def one(img: LoadedImage) -> ImageOutcome:
             analysis = analyses[img.idx]
+            owned = media_is_owned(img.source, env, owned_ids=owned_ids,
+                                   direct_uploads_owned=cfg.pipeline.direct_uploads_owned)
             hint = graphic_hint(analysis.image_type)
             decision, reason = decide(analysis, owned_source=owned,
-                                      target_language=locale.language_tag)
+                                      target_language=locale.language_tag, locale=locale.code)
             if decision == ImageDecision.REVIEW:
                 return ImageOutcome(img.idx, decision, reason)
             try:
@@ -500,16 +517,25 @@ class Pipeline:
                     mode, facts = "enhance", analysis.extracted_text
                     raw = await edit(prompts.render("image_enhance", locale.code,
                                                     size=m.image_size).user, img)
-                elif owned:  # REGENERATE of our own visual = localize it, using it as reference
+                elif owned and decision == ImageDecision.LOCALIZE:  # authorized editing only
                     mode, facts = "localize", analysis.extracted_text
                     raw = await edit(prompts.render("image_localize", locale.code,
                                                     **self._base_vars(env, locale),
                                                     size=m.image_size).user, img)
                 else:  # original visual; the third-party image is NOT sent as a reference
-                    mode, reference = "regenerate", None
-                    facts = (analysis.extracted_text
-                             if analysis.image_type in ("chart", "infographic")
-                             else "; ".join(evaluation.key_facts[:4]))
+                    mode = "regenerate"
+                    hint = True  # original information cards retain legible text as PNG
+                    # Generator gets facts only. QC gets the original source for comparison.
+                    facts = "\n".join(analysis.source_facts)
+                    if not facts.strip() and not (analysis.has_channel_overlay or
+                                                  analysis.has_third_party_watermark):
+                        facts = analysis.extracted_text
+                    if not facts.strip():
+                        facts = env.text
+                    facts += "\n" + "; ".join(analysis.brand_names)
+                    if not facts.strip():
+                        return ImageOutcome(img.idx, ImageDecision.REVIEW,
+                                            t(locale.code, "policy_unknown"))
                     prompt = prompts.render(
                         "image_regenerate", locale.code, **self._base_vars(env, locale),
                         post=rewrite.post, brief=rewrite.image_brief or analysis.description,
@@ -521,18 +547,19 @@ class Pipeline:
                 output = await asyncio.to_thread(self._optimize, raw, hint, cfg)
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:
+            except Exception:
+                log.exception("image generation failed")
                 return ImageOutcome(img.idx, ImageDecision.REVIEW,
-                                    mask(f"Image step failed ({type(exc).__name__}): {exc}")[:500])
+                                    t(locale.code, "image_failed"))
 
             # Every Image2 output must pass visual QC before it can be a final asset.
             passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
                                                facts=facts, post=rewrite.post)
             if not passed:
                 return ImageOutcome(img.idx, ImageDecision.REVIEW,
-                                    f"Image QC failed after {mode}: {qc_reason}",
+                                    t(locale.code, "qc_fail", mode=label(locale.code, mode), reason=qc_reason),
                                     review_blob=output, ai_generated=True)
-            return ImageOutcome(img.idx, decision, f"{reason} QC passed.", output,
+            return ImageOutcome(img.idx, decision, f"{reason} {t(locale.code, 'qc_pass')}", output,
                                 ai_generated=True)
 
         results = await asyncio.gather(*(one(i) for i in images), return_exceptions=True)
@@ -542,7 +569,7 @@ class Pipeline:
                 raise res
             if isinstance(res, BaseException):
                 final.append(ImageOutcome(img.idx, ImageDecision.REVIEW,
-                                          mask(f"Image pipeline error: {res}")[:500]))
+                                          t(locale.code, "image_failed")))
             else:
                 final.append(res)
         await self._event(task_id, "images",
@@ -553,7 +580,7 @@ class Pipeline:
                   candidate: ImageBlob, reference: LoadedImage | None, *, facts: str, post: str
                   ) -> tuple[bool, str]:
         """Visual verification of one Image2 output. Errors count as a failed check."""
-        allowed = [facts, post] if mode == "regenerate" else [facts]
+        allowed = [facts]  # generated draft is never verification evidence
         if reference is not None:
             allowed.append(env.text)
         try:
@@ -570,12 +597,21 @@ class Pipeline:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            return False, mask(f"QC unavailable ({type(exc).__name__}: {exc})")[:300]
-        return qc_verdict(qc, allowed_texts=allowed)
+            log.warning("image QC unavailable", extra=log_ctx(error=mask(str(exc))))
+            return False, t(locale.code, "qc_unavailable")
+        if qc.issues:
+            try:
+                if not await is_localized(qc.issues, locale, self.app):
+                    return False, t(locale.code, "qc_rejected")
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                return False, t(locale.code, "qc_unavailable")
+        return qc_verdict(qc, allowed_texts=allowed, locale=locale.code)
 
     async def _persist(self, task_id: str, images: list[LoadedImage],
                        outcomes: list[ImageOutcome], analyses: dict[int, ImageAnalysis],
-                       cfg: AppSettings) -> list[MediaResult]:
+                       cfg: AppSettings, *, locale: str = "en-US") -> list[MediaResult]:
         """Upload final assets (and optional compressed review copies) to R2, deduplicated."""
         by_idx = {img.idx: img for img in images}
         results: list[MediaResult] = []
@@ -604,7 +640,10 @@ class Pipeline:
                 label = ("R2 budget reached" if isinstance(exc, StorageBudgetExceeded)
                          else f"R2 upload failed ({type(exc).__name__})")
                 note = mask(f"{label}: {exc}")[:300]
-                decision, reason, key, kind = ImageDecision.REVIEW, f"{reason} [{note}]", None, None
+                decision, reason, key, kind = (
+                    ImageDecision.REVIEW, f"{reason} " + t(locale,
+                        "storage_budget" if isinstance(exc, StorageBudgetExceeded)
+                        else "storage_failed"), None, None)
                 await self._event(task_id, "persist", f"image {o.idx}: {note}", level="warning")
             stored += key is not None
             await self.app.repo.update_media_decision(task_id, o.idx, decision.value, reason,

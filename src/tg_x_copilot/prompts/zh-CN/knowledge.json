@@ -1,0 +1,30 @@
+{
+  "rules": {
+    "max_chars": 280,
+    "max_hashtags": 1,
+    "max_emojis": 2,
+    "max_images": 4,
+    "similarity_threshold": 0.72,
+    "style": "自然、简洁的简体中文。短句、具体事实、不夸张；保留品牌名与技术标识。",
+    "banned_phrases": [
+      "震惊",
+      "不看后悔",
+      "速看",
+      "百分百保证",
+      "颠覆一切",
+      "没人告诉你"
+    ]
+  },
+  "hooks": [
+    {
+      "name": "why_it_matters",
+      "pattern": "先用一句话说明事实，再解释实际影响。",
+      "example": "这次更新改变了默认设置，升级前先检查兼容性。"
+    },
+    {
+      "name": "practical_takeaway",
+      "pattern": "以有来源支持的实用建议或待核实问题开头。",
+      "example": "使用这项功能前，先确认设备是否支持。"
+    }
+  ]
+}

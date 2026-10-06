@@ -1,0 +1,31 @@
+{
+  "rules": {
+    "max_chars": 280,
+    "max_hashtags": 1,
+    "max_emojis": 2,
+    "max_images": 4,
+    "similarity_threshold": 0.72,
+    "style": "Plain, conversational American English. Short sentences, concrete facts.",
+    "banned_phrases": [
+      "you won't believe",
+      "shocking",
+      "doctors hate",
+      "this changes everything",
+      "game changer",
+      "click here",
+      "100% guaranteed"
+    ]
+  },
+  "hooks": [
+    {
+      "name": "why_it_matters",
+      "pattern": "State the fact, then explain its practical consequence.",
+      "example": "This update changes the default setting. Check compatibility before upgrading."
+    },
+    {
+      "name": "practical_takeaway",
+      "pattern": "Open with a practical takeaway supported by the source.",
+      "example": "Before using this feature, check whether your device supports it."
+    }
+  ]
+}

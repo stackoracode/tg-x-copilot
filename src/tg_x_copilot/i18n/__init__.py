@@ -58,3 +58,17 @@ class I18n:
             return template.format(**kwargs)
         except (KeyError, IndexError):
             return template
+
+
+_catalog = I18n()
+
+
+def t(code: str | None, key: str, **kwargs: Any) -> str:
+    """Shared translations for pure policy functions and transport-independent diagnostics."""
+    return _catalog.t(code, key, **kwargs)
+
+
+def label(code: str | None, value: str) -> str:
+    key = "label_" + value
+    translated = t(code, key)
+    return value if translated == key else translated
