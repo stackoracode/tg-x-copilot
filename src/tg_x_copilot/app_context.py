@@ -3,8 +3,8 @@
 Start:  DB -> settings overrides -> clients -> Telegram -> workers -> sweeper
 Stop:   workers (grace; claims of cancelled tasks are released) -> Telegram -> sweeper -> HTTP -> DB
 
-Grouping: a Telegram album (one grouped_id) becomes one task; every other message, forwarded or
-not, becomes its own task. Unrelated forwards are never merged by arrival time.
+Grouping: manual mode keeps one task per message or album. Per-user automatic bundle mode
+explicitly groups nearby forwards before durable intake; copyright/edit permissions stay separate.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from .services.hub import ClientHub
 from .services.ops import Ops
 from .services.image_preferences import ImagePreferenceService
 from .services.storage import AssetStore
+from .image_settings import ImagePreferences, WorkflowMode, resolve_workflow, has_image_source
 
 log = logging.getLogger(__name__)
 
@@ -63,13 +64,16 @@ class AppContext:
 
     # ------------------------------------------------------------------ intake
 
-    async def intake(self, chat_id: int, user_id: int, messages: list[Any]) -> None:
+    async def intake(self, chat_id: int, user_id: int, messages: list[Any], *,
+                     preferences: ImagePreferences | None = None) -> None:
         cfg = self.config.current
         env = normalize(messages, chat_id=chat_id, user_id=user_id,
                         locale=cfg.default_locale, market=cfg.market)
-        preferences = await self.image_preferences.get(user_id)
-        env.image_action = preferences.image_action
-        env.image_options = preferences.image_options
+        preferences = preferences or await self.image_preferences.get(user_id)
+        effective = resolve_workflow(preferences, has_images=has_image_source(env.media))
+        env.workflow_mode = effective.workflow_mode
+        env.image_action = effective.image_action
+        env.image_options = effective.image_options
         if not env.text and not env.media:
             return
         task_id = await self.repo.create_task(env)
@@ -78,7 +82,7 @@ class AppContext:
                                   data={"message_ids": env.message_ids})
         log.info("task created", extra=ctx(task_id=task_id, messages=len(env.message_ids)))
         await self.workers.enqueue(task_id, wait=False)  # sweeper catches overflow
-        if self.telegram:
+        if self.telegram and env.workflow_mode != WorkflowMode.AUTO_BUNDLE:
             await self.telegram.notify(chat_id, self.i18n.t(
                 env.locale, "queued", count=len(env.message_ids), task_id=task_id))
 
@@ -130,6 +134,12 @@ class AppContext:
         grace = self.config.base.shutdown_grace_seconds
         self.shutting_down = True
         log.info("shutting down", extra=ctx(grace=grace))
+        # Persist buffered automatic bundles before the workers begin draining.
+        if self.telegram:
+            try:
+                await self.telegram.flush_intake()
+            except Exception:
+                log.exception("flushing automatic intake failed during shutdown")
         # Workers drain while Telegram is still connected so in-flight drafts get delivered.
         steps = [
             ("workers", lambda: self.workers.stop(grace)),

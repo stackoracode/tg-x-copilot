@@ -78,3 +78,10 @@ def sanitize_analysis(analysis: ImageAnalysis) -> ImageAnalysis:
             "source_facts": publishing_facts(analysis),
         }
     )
+
+
+def editorial_evidence(analysis: ImageAnalysis) -> str:
+    """Use source OCR, or explicit Vision observations for text-free images; never guess facts."""
+    if analysis.sensitive:
+        return ""
+    return editorial_text(analysis) or "\n".join(publishing_facts(analysis))

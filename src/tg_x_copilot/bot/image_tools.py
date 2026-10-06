@@ -16,6 +16,7 @@ from ..image_settings import (
     ImageOptions,
     ImagePreferences,
     InformationDensity,
+    WorkflowMode,
 )
 
 from ..pipeline.image_policy import needs_edit_confirmation
@@ -90,7 +91,10 @@ def keyboard(scope: str, prefs: ImagePreferences, tr, page: str = "main"):
                 ]
             )
     else:
-        rows = [[button("image_tools_auto", "a", "auto", prefs.image_action is None)]]
+        rows = [[button("image_tools_auto_bundle", "w",
+                        "manual" if prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE else "auto_bundle",
+                        prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE)],
+                [button("image_tools_auto", "a", "auto", prefs.image_action is None)]]
         choices = [
             button(
                 "image_action_" + action.value,
@@ -169,15 +173,18 @@ class ImageTools:
         service = app.image_preferences
         if command == "run":
             prefs = await service.get(event.sender_id)
-            ok, message = await app.ops.rerun_images(scope, event.sender_id, prefs)
+            manual = prefs.model_copy(update={"workflow_mode": WorkflowMode.MANUAL})
+            ok, message = await app.ops.rerun_images(scope, event.sender_id, manual)
             await event.respond(message)
             return
-        if command in ("a", "p", "o", "d", "l"):
+        if command in ("a", "p", "o", "d", "l", "w"):
 
             def mutate(prefs):
                 values = prefs.model_dump()
                 opts = prefs.image_options
-                if command == "a":
+                if command == "w":
+                    values["workflow_mode"] = WorkflowMode(value)
+                elif command == "a":
                     values["image_action"] = (
                         None if value == "auto" else ImageAction(value)
                     )
@@ -227,7 +234,7 @@ class ImageTools:
             tr("image_tools_title")
             + "\n"
             + tr(
-                "image_tools_action",
+                "image_tools_manual_action" if prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE else "image_tools_action",
                 action=(
                     tr("image_action_" + prefs.image_action.value)
                     if prefs.image_action
@@ -235,6 +242,8 @@ class ImageTools:
                 ),
             )
         )
+        if prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE:
+            text += "\n" + tr("image_tools_auto_bundle_help")
         if (prefs.image_action and ACTIONS[prefs.image_action].text_capable and
             {ImageOption.MINIMAL_CHANGES, ImageOption.REMOVE_OVERLAYS} & prefs.image_options.flags):
             text += "\n" + tr("image_tools_creation_priority")

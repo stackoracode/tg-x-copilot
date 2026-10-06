@@ -23,7 +23,7 @@ from .. import prompts
 from ..clients.openai_compat import image_data_url
 from ..config import AppSettings
 from ..i18n import Locale, label, t
-from ..image_settings import ACTIONS, ImageAction, ImageOption
+from ..image_settings import ACTIONS, ImageAction, ImageOption, WorkflowMode
 from ..logging_setup import ctx as log_ctx
 from ..logging_setup import mask
 from ..models import (
@@ -36,7 +36,7 @@ from .guards import GuardReport, XRules, check_rewrite, x_length
 from .language import is_localized
 from .image_policy import plan, media_is_owned, has_task_edit_authorization
 from .media_errors import media_error_reason
-from .image_content import sanitize_analysis, editorial_text, without_promotion, contains_promotion
+from .image_content import sanitize_analysis, editorial_text, editorial_evidence, without_promotion, contains_promotion
 from .facts import build_verified_facts, packet_is_traceable
 from .overlays import (approved_regions, wants_region_edit, crop_region, composite_patches,
                        unchanged_outside, validate_pixel_scope, PromotionScopeError)
@@ -150,6 +150,11 @@ class Pipeline:
         # 1. Jev sees only core content, before any media download.
         await repo.set_stage(task_id, "triage")
         triage = await self._triage(task_id, env, locale)
+        if (env.workflow_mode == WorkflowMode.AUTO_BUNDLE and triage.route == "skip"
+                and (env.text.strip() or env.media)):
+            # Keep Jev's judgment and warnings; let the main evaluator inspect requested bundles.
+            triage = triage.model_copy(update={"route": "review", "escalated": True,
+                "use_media": bool(env.media), "reasons": [*triage.reasons, t(env.locale, "auto_bundle_evaluate")]})
         await repo.save_triage(task_id, triage)
         await self._event(task_id, "triage", f"{triage.summary}; {' '.join(triage.reasons)}",
                           data=triage.model_dump())
@@ -456,10 +461,13 @@ class Pipeline:
             urls=", ".join(env.urls[:10]) or "none", text=env.text[:8000] or t(locale.code, "empty_text"),
             image_notes=notes,
         )
+        messages = p.messages()
+        if env.workflow_mode == WorkflowMode.AUTO_BUNDLE:
+            messages[0]["content"] += "\n" + prompts.render("auto_evaluate", locale.code).user
         for _ in range(max(1, cfg.pipeline.max_rewrite_attempts)):
             async with self.app.limits.text:
                 result = await self.app.hub.cpa.chat_json(
-                    cfg.models.text_model, p.messages(), Evaluation,
+                    cfg.models.text_model, messages, Evaluation,
                     temperature=cfg.models.text_temperature, json_mode=cfg.models.json_mode)
             if await is_localized([result.audience, result.angle, result.reason,
                                    *result.key_facts, *result.background_points, *result.risks],
@@ -472,7 +480,7 @@ class Pipeline:
                        hooks: list[dict[str, Any]], locale: Locale, cfg: AppSettings
                        ) -> tuple[RewriteResult, GuardReport]:
         # Source-derived text counts as verified; everything the LLM produced does not.
-        verified = [editorial_text(a) for a in analyses.values() if editorial_text(a)]
+        verified = [editorial_evidence(a) for a in analyses.values() if editorial_evidence(a)]
         unverified = evaluation.key_facts + evaluation.background_points
         hooks_text = "\n".join(f"- {h['pattern']} {t(locale.code, 'hook_example')} \"{h['example']}\""
                                for h in hooks) or "- (none)"
@@ -584,10 +592,18 @@ class Pipeline:
         rules = prompts.render_json("image_actions", locale.code)
         option_rules = "\n".join(rules["options"][flag.value] for flag in sorted(options.flags))
 
+        def generation_facts(reference: LoadedImage | None) -> str:
+            facts = packet.text
+            if env.workflow_mode == WorkflowMode.AUTO_BUNDLE and reference is not None:
+                focused = [fact for fact in packet.facts if fact.source_idx in (None, reference.idx)]
+                if focused:
+                    facts = "\n".join(fact.text for fact in focused)
+            return facts
+
         def render_image(chosen: ImageAction, reference: LoadedImage | None) -> str:
             return prompts.render("image_execute", locale.code, action=chosen.value,
                 action_rules=rules["actions"][chosen.value], target_locale=locale.code,
-                language_name=locale.language_name, market=env.market, facts=packet.text,
+                language_name=locale.language_name, market=env.market, facts=generation_facts(reference),
                 angle=rewrite.hook, brief=rewrite.image_brief,
                 layout=(analyses[reference.idx].layout_description if reference and
                         {ImageOption.SIMILAR_LAYOUT, ImageOption.MINIMAL_CHANGES} & options.flags else ""),
@@ -634,48 +650,57 @@ class Pipeline:
                 except ValueError:
                     return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "cleanup_scope_required"),
                                         failure_stage=MediaFailureStage.IMAGE_POLICY)
-            try:
-                if mode == "promotion_cleanup":
-                    patches = []
-                    for region in regions:
-                        crop = await asyncio.to_thread(crop_region, reference.blob.data, region)
-                        patch_prompt = prompts.render("image_cleanup", locale.code,
-                            cleanup_contract=json.dumps({"region": region.model_dump(mode="json"),
-                                "editing_rights_confirmed": True}, ensure_ascii=False)).user
+            attempts = 2 if (env.workflow_mode == WorkflowMode.AUTO_BUNDLE and
+                             execution == "create" and mode == "regenerate") else 1
+            feedback = ""
+            for attempt in range(1, attempts + 1):
+                try:
+                    if mode == "promotion_cleanup":
+                        patches = []
+                        for region in regions:
+                            crop = await asyncio.to_thread(crop_region, reference.blob.data, region)
+                            patch_prompt = prompts.render("image_cleanup", locale.code,
+                                cleanup_contract=json.dumps({"region": region.model_dump(mode="json"),
+                                    "editing_rights_confirmed": True}, ensure_ascii=False)).user
+                            async with limits.image:
+                                patches.append(await hub.cpa.images_edit(m.image_model, patch_prompt, crop,
+                                    "image/png", size=m.image_size, mode=m.image_edit_mode))
+                        output = await asyncio.to_thread(composite_patches, reference.blob.data, regions, patches)
+                    else:
+                        prompt = render_image(chosen, reference) + feedback
                         async with limits.image:
-                            patches.append(await hub.cpa.images_edit(m.image_model, patch_prompt, crop,
-                                "image/png", size=m.image_size, mode=m.image_edit_mode))
-                    output = await asyncio.to_thread(composite_patches, reference.blob.data, regions, patches)
-                else:
-                    prompt = render_image(chosen, reference)
-                    async with limits.image:
-                        if execution == "edit":
-                            raw = await hub.cpa.images_edit(m.image_model, prompt, reference.blob.data,
-                                reference.blob.mime, size=m.image_size, mode=m.image_edit_mode)
-                        else:
-                            raw = await hub.cpa.images_generate(m.image_model, prompt, size=m.image_size)
-                    graphic = True if execution == "create" else graphic_hint(analyses[idx].image_type)
-                    output = await asyncio.to_thread(self._optimize, raw, graphic, cfg)
-                await self._event(task_id, "IMAGE2", f"image {idx}: output produced")
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log.exception("image execution failed")
-                await self._event(task_id, "IMAGE2", f"image {idx}: processing failed", level="warning")
-                return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "media_stage_image2") + " " + media_error_reason(exc, ui_locale),
-                                    failure_stage=MediaFailureStage.IMAGE2)
-            passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
-                facts=packet.text, post=rewrite.post,
-                source_text=(analyses[reference.idx].extracted_text if reference else ""),
-                cleanup_contract=cleanup_contract, cleanup_regions=regions, task_id=task_id)
-            await self._event(task_id, "IMAGE_QC", f"image {idx}: {'passed' if passed else qc_reason}",
-                              level="info" if passed else "warning")
-            if not passed:
-                return ImageOutcome(idx, ImageDecision.REVIEW,
-                    t(ui_locale, "qc_fail", mode=label(ui_locale, mode), reason=qc_reason),
-                    review_blob=output, ai_generated=True, failure_stage=MediaFailureStage.QC)
-            return ImageOutcome(idx, decision, reason + " " + t(ui_locale, "qc_pass"), output,
-                                ai_generated=True)
+                            if execution == "edit":
+                                raw = await hub.cpa.images_edit(m.image_model, prompt, reference.blob.data,
+                                    reference.blob.mime, size=m.image_size, mode=m.image_edit_mode)
+                            else:
+                                raw = await hub.cpa.images_generate(m.image_model, prompt, size=m.image_size)
+                        graphic = True if execution == "create" else graphic_hint(analyses[idx].image_type)
+                        output = await asyncio.to_thread(self._optimize, raw, graphic, cfg)
+                    await self._event(task_id, "IMAGE2", f"image {idx}: output produced")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log.exception("image execution failed")
+                    await self._event(task_id, "IMAGE2", f"image {idx}: processing failed", level="warning")
+                    return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "media_stage_image2") + " " + media_error_reason(exc, ui_locale),
+                                        failure_stage=MediaFailureStage.IMAGE2)
+                passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
+                    facts=generation_facts(reference), post=rewrite.post,
+                    source_text=(analyses[reference.idx].extracted_text if reference else ""),
+                    cleanup_contract=cleanup_contract, cleanup_regions=regions, task_id=task_id)
+                await self._event(task_id, "IMAGE_QC", f"image {idx}: {'passed' if passed else qc_reason}",
+                                  level="info" if passed else "warning")
+                if passed:
+                    return ImageOutcome(idx, decision, reason + " " + t(ui_locale, "qc_pass"), output,
+                                        ai_generated=True)
+                if attempt < attempts:
+                    feedback = "\n" + prompts.render("image_retry", locale.code,
+                        facts=generation_facts(reference), failure=json.dumps(qc_reason, ensure_ascii=False)).user
+                    await self._event(task_id, "IMAGE_QC", f"image {idx}: retrying original visual after failed QC",
+                                      level="warning")
+            return ImageOutcome(idx, ImageDecision.REVIEW,
+                t(ui_locale, "qc_fail", mode=label(ui_locale, mode), reason=qc_reason),
+                review_blob=output, ai_generated=True, failure_stage=MediaFailureStage.QC)
 
         if selected and selected.execution == "omit":
             return [ImageOutcome(idx, ImageDecision._value2member_map_.get(action.value, action),
@@ -725,6 +750,10 @@ class Pipeline:
         failure_reasons = {row["idx"]: row.get("decision_reason") for row in records
                            if row.get("decision") == ImageDecision.REVIEW.value}
         for idx in missing:
+            if env.workflow_mode == WorkflowMode.AUTO_BUNDLE and idx >= max_images and idx in analyses:
+                final.append(ImageOutcome(idx, ImageDecision.OMIT,
+                    t(ui_locale, "auto_bundle_image_limit", count=max_images)))
+                continue
             if idx not in present:
                 final.append(ImageOutcome(idx, ImageDecision.REVIEW,
                     (failure_reasons.get(idx) or t(ui_locale, "vision_failed")) if idx < max_images else

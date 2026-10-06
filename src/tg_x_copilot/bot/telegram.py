@@ -21,6 +21,8 @@ from ..pipeline.media import inspect_image
 from ..pipeline.media_errors import media_error_reason
 from ..pipeline.image_policy import needs_edit_confirmation
 from .image_tools import ImageTools
+from .bundles import BundleCollector
+from ..image_settings import WorkflowMode, ImagePreferences
 from ..logging_setup import ctx
 
 if TYPE_CHECKING:
@@ -45,6 +47,7 @@ class TelegramBot:
         self.client.parse_mode = "html"
         self._allowed = set(cfg.allowed_user_ids)
         self._token = cfg.bot_token.get_secret_value()
+        self._collector = BundleCollector()
 
     @property
     def connected(self) -> bool:
@@ -70,7 +73,13 @@ class TelegramBot:
         c.add_event_handler(self._on_album, events.Album(func=lambda e: e.is_private))
         c.add_event_handler(self._on_callback, events.CallbackQuery())
 
+    async def flush_intake(self) -> None:
+        collector = getattr(self, "_collector", None)
+        if collector:
+            await collector.close()
+
     async def stop(self) -> None:
+        await self.flush_intake()
         if self.client.is_connected():
             await self.client.disconnect()
         log.info("telegram bot disconnected")
@@ -169,8 +178,14 @@ class TelegramBot:
                 caption = draft if caption_fits and not caption_sent else ""
                 file_arg = batch[0][1] if len(batch) == 1 else [bio for _, bio in batch]
                 caption_arg = caption if len(batch) == 1 else [caption] + [""] * (len(batch)-1)
-                sent = await self.client.send_file(chat_id, file_arg, caption=caption_arg,
-                                                   parse_mode=None, force_document=False)
+                kwargs = {"caption": caption_arg, "parse_mode": None, "force_document": False}
+                if len(files) == 1:
+                    # Telegram albums have no inline markup; single-photo bundles can carry controls.
+                    kwargs["buttons"] = [[
+                        Button.inline(tr("btn_rerun_images"), f"t:i:{task_id}".encode()),
+                        Button.inline(tr("btn_image_tools"), f"it:{task_id}:v:main".encode()),
+                    ]]
+                sent = await self.client.send_file(chat_id, file_arg, **kwargs)
                 messages = sent if isinstance(sent, (list, tuple)) else [sent]
                 for pos, (idx, _) in enumerate(batch):
                     message = messages[pos] if pos < len(messages) else None
@@ -255,7 +270,7 @@ class TelegramBot:
         auth_buttons = [[Button.inline(tr("btn_confirm_edit_rights", idx=m["idx"]),
                                        f"ia:{task_id}:{m['idx']}".encode())]
                         for m in media if needs_edit_confirmation(task, m)]
-        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, *auth_buttons, [image_button]], reply_to=anchor_id)
+        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, *auth_buttons, [Button.inline(tr("btn_rerun_images"), f"t:i:{task_id}".encode()), image_button]], reply_to=anchor_id)
         if draft and not caption_sent:
             kwargs = {"parse_mode": None, "link_preview": False}
             if anchor_id is not None:
@@ -296,18 +311,39 @@ class TelegramBot:
         if not self._authorized(event.sender_id):
             await event.respond(self.t("unauthorized"))
             return
-        # Each regular (non-album) message is its own task; nothing is merged by arrival time.
-        await self._intake(event, [event.message])
+        # Manual mode preserves one task per message; automatic mode groups an explicit short burst.
+        await self._receive(event, [event.message])
 
     async def _on_album(self, event: events.Album.Event) -> None:
         if not self._authorized(event.sender_id):
             return
-        # Telegram albums (one grouped_id) are the only automatic grouping.
-        await self._intake(event, list(event.messages))
+        # Albums stay intact; opted-in automatic mode can combine a nearby text message with them.
+        await self._receive(event, list(event.messages))
 
-    async def _intake(self, event: Any, messages: list[Any]) -> None:
+    async def _receive(self, event: Any, messages: list[Any]) -> None:
+        service = getattr(self.app, "image_preferences", None)
+        preferences = await service.get(event.sender_id) if service else ImagePreferences()
+        key = (event.chat_id, event.sender_id)
+        collector = getattr(self, "_collector", None)
+        if preferences.workflow_mode == WorkflowMode.AUTO_BUNDLE and getattr(self.app, "shutting_down", False):
+            await self._intake(event, messages, preferences=preferences)
+        elif preferences.workflow_mode == WorkflowMode.AUTO_BUNDLE:
+            if collector is None:
+                collector = self._collector = BundleCollector()
+            async def emit(bundle, snapshot):
+                await self._intake(event, bundle, preferences=snapshot)
+            await collector.add(key, messages, preferences, emit)
+        else:
+            if collector:
+                await collector.flush(key)
+            await self._intake(event, messages)
+
+    async def _intake(self, event: Any, messages: list[Any], *, preferences: ImagePreferences | None = None) -> None:
         try:
-            await self.app.intake(event.chat_id, event.sender_id, messages)
+            if preferences is None:
+                await self.app.intake(event.chat_id, event.sender_id, messages)
+            else:
+                await self.app.intake(event.chat_id, event.sender_id, messages, preferences=preferences)
         except Exception:
             log.exception("intake failed")
             await event.respond(self.t("action_failed", result=self.t("generic_failure")))
@@ -374,7 +410,11 @@ class TelegramBot:
     async def _task_action(self, event: events.CallbackQuery.Event, action: str, task_id: str
                            ) -> None:
         ops = self.app.ops
-        if action == "a":
+        if action == "i":
+            await event.answer()
+            _, message = await ops.rerun_bundle_images(task_id, event.sender_id, event.chat_id)
+            await event.respond(message)
+        elif action == "a":
             ok, msg = await ops.approve(task_id)
             await event.answer(msg)
             if ok:

@@ -353,6 +353,12 @@
     "image_option_info_card_fallback": "Allow an original information card if local cleanup is unsafe",
     "draft_in_image_caption": "The X draft is included with the image(s), ready to copy.",
     "guard_promotion": "The draft contains identified channel promotion; remove it.",
-    "image_tools_creation_priority": "The selected action creates an original image; checked preferences apply to the new design."
+    "image_tools_creation_priority": "The selected action creates an original image; checked preferences apply to the new design.",
+    "image_tools_auto_bundle": "Automatic publishing bundle",
+    "image_tools_manual_action": "Manual rerun action: {action}",
+    "image_tools_auto_bundle_help": "Enabled: forwards within 3 seconds form one task. Recreate source images as original visuals; text-only tasks receive an information card. Images and draft arrive together, without source-edit confirmation. Manual reruns use the selected action.",
+    "btn_rerun_images": "🔄 Redo images",
+    "auto_bundle_evaluate": "Automatic bundle requested; continuing to factual evaluation with Jev warnings retained.",
+    "auto_bundle_image_limit": "Available source material was combined; this X bundle contains up to {count} original visuals, so additional source images are not separately output."
   }
 }

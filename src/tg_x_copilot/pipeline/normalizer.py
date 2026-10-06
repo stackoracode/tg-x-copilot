@@ -1,6 +1,6 @@
 """Turn one Telegram message, or one album (shared grouped_id), into one InputEnvelope.
 
-Unrelated forwards are never merged: the bot calls this once per regular message.
+Manual mode passes one message/album. Opted-in automatic mode may pass one collected burst.
 
 Uses duck typing on Telethon's Message so it can be unit-tested with simple fakes.
 """

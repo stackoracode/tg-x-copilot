@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .image_settings import ImageAction, ImageOptions
+from .image_settings import ImageAction, ImageOptions, WorkflowMode
 
 
 class TaskStatus(StrEnum):
@@ -88,6 +88,7 @@ class InputEnvelope(BaseModel):
     urls: list[str] = Field(default_factory=list)
     media: list[SourceMedia] = Field(default_factory=list)
     forwards: list[ForwardOrigin] = Field(default_factory=list)
+    workflow_mode: WorkflowMode = WorkflowMode.MANUAL
     image_action: ImageAction | None = None
     image_options: ImageOptions = Field(default_factory=ImageOptions)
     processing_mode: Literal["full", "images_only"] = "full"

@@ -353,6 +353,12 @@
     "image_option_info_card_fallback": "局部清除不安全时允许改用原创信息卡片",
     "draft_in_image_caption": "X 文案已随图片一同发送，可直接复制。",
     "guard_promotion": "文案包含已识别的频道推广信息，需移除。",
-    "image_tools_creation_priority": "当前按所选操作生成原创图片，勾选偏好用于新图设计。"
+    "image_tools_creation_priority": "当前按所选操作生成原创图片，勾选偏好用于新图设计。",
+    "image_tools_auto_bundle": "自动生成内容包",
+    "image_tools_manual_action": "手动重跑操作：{action}",
+    "image_tools_auto_bundle_help": "已开启：3 秒内连续转发合为一个任务。有图逐张原创重绘，纯文本自动配信息卡片，图片与文案一起返回，无需确认原图编辑权限。手动重跑使用所选操作。",
+    "btn_rerun_images": "🔄 重新做图",
+    "auto_bundle_evaluate": "已请求自动内容包，保留 Jev 提示并继续核实内容。",
+    "auto_bundle_image_limit": "可用素材已汇总，本 X 内容包最多输出 {count} 张原创配图，额外源图不单独输出。"
   }
 }

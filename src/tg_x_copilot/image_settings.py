@@ -44,6 +44,11 @@ class ImageOption(StrEnum):
     INFO_CARD_FALLBACK = "info_card_fallback"
 
 
+class WorkflowMode(StrEnum):
+    MANUAL = "manual"
+    AUTO_BUNDLE = "auto_bundle"
+
+
 class InformationDensity(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -118,6 +123,7 @@ class ImageOptions(BaseModel):
 
 class ImagePreferences(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    workflow_mode: WorkflowMode = WorkflowMode.MANUAL
     image_action: ImageAction | None = (
         None  # automatic rights-aware policy for existing tasks
     )
@@ -134,3 +140,25 @@ PRESETS: dict[ImageAction, frozenset[ImageOption]] = {
     | {ImageOption.MINIMAL_CHANGES, ImageOption.VISUAL_PRIORITY},
     ImageAction.GENERATE: DEFAULT_OPTIONS | {ImageOption.REDESIGN},
 }
+
+
+
+def has_image_source(media) -> bool:
+    return any((item.get("kind") if isinstance(item, dict) else item.kind)
+               in ("photo", "image_document") for item in media)
+
+
+def resolve_workflow(preferences: ImagePreferences, *, has_images: bool) -> ImagePreferences:
+    """Automatic mode creates originals; it never asserts rights to edit source pixels."""
+    if preferences.workflow_mode != WorkflowMode.AUTO_BUNDLE:
+        return preferences.model_copy(deep=True)
+    options = preferences.image_options
+    flags = (options.flags - {ImageOption.MINIMAL_CHANGES, ImageOption.SIMILAR_LAYOUT}) | {
+        ImageOption.REDESIGN, ImageOption.REMOVE_OVERLAYS,
+        ImageOption.KEEP_BRANDS, ImageOption.KEEP_IDENTIFIERS, ImageOption.FACTUAL_PRIORITY,
+    }
+    return preferences.model_copy(update={
+        "image_action": ImageAction.RECREATE if has_images else ImageAction.GENERATE,
+        "image_options": ImageOptions(**{**options.model_dump(), "flags": flags,
+                                         "promotion_targets": frozenset()}),
+    })

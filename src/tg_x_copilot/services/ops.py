@@ -13,7 +13,7 @@ from ..logging_setup import mask
 from ..i18n import label
 from ..models import TaskStatus, ImageEditAuthorization
 from ..pipeline.image_policy import needs_edit_confirmation
-from ..image_settings import ImagePreferences
+from ..image_settings import ImagePreferences, resolve_workflow, has_image_source
 
 if TYPE_CHECKING:
     from ..app_context import AppContext
@@ -194,6 +194,7 @@ class Ops:
         await self.app.storage.release_task(task_id)  # media is re-fetched from Telegram
         if hasattr(self.app, "image_preferences") and task.get("tg_user_id") is not None:
             prefs = await self.app.image_preferences.get(task["tg_user_id"])
+            prefs = resolve_workflow(prefs, has_images=has_image_source((task.get("envelope") or {}).get("media") or []))
             await self.app.repo.set_task_image_preferences(task_id, prefs)
         await self.app.repo.set_task_locale(task_id, self.app.config.current.default_locale,
                                             self.app.config.current.market)
@@ -224,6 +225,14 @@ class Ops:
                                       data=authorization.model_dump(mode="json"))
         await self.app.workers.enqueue(task_id, wait=False)
         return True, tr("edit_auth_queued")
+
+    async def rerun_bundle_images(self, task_id: str, user_id: int, chat_id: int) -> tuple[bool, str]:
+        task = await self.app.repo.get_task(task_id)
+        if not task or task.get("tg_user_id") != user_id or task.get("tg_chat_id") != chat_id:
+            return False, self.t("image_tools_owner")
+        prefs = await self.app.image_preferences.get(user_id)
+        prefs = resolve_workflow(prefs, has_images=has_image_source((task.get("envelope") or {}).get("media") or []))
+        return await self.rerun_images(task_id, user_id, prefs)
 
     async def rerun_images(self, task_id: str, user_id: int,
                            preferences: ImagePreferences) -> tuple[bool, str]:

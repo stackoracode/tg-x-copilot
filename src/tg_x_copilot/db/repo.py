@@ -321,10 +321,10 @@ class Repository:
         n = await self.db.execute(
             "UPDATE tasks SET status=%s, stage='images_queued', error=NULL,"
             " envelope=JSON_SET(envelope, '$.processing_mode', 'images_only',"
-            " '$.image_action', %s, '$.image_options', JSON_EXTRACT(%s, '$'), '$.image_retry_indices', NULL)"
+            " '$.image_action', %s, '$.image_options', JSON_EXTRACT(%s, '$'), '$.workflow_mode', %s, '$.image_retry_indices', NULL)"
             " WHERE id=%s AND tg_user_id=%s AND status IN (%s,%s) AND draft_text IS NOT NULL",
             (TaskStatus.RECEIVED.value, preferences.image_action.value if preferences.image_action
-             else None, _dumps(preferences.image_options), task_id, user_id,
+             else None, _dumps(preferences.image_options), preferences.workflow_mode.value, task_id, user_id,
              TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value))
         return n == 1
 
@@ -353,8 +353,8 @@ class Repository:
     async def set_task_image_preferences(self, task_id: str, prefs: ImagePreferences) -> None:
         await self.db.execute(
             "UPDATE tasks SET envelope=JSON_SET(envelope, '$.image_action', %s,"
-            " '$.image_options', JSON_EXTRACT(%s, '$')) WHERE id=%s",
-            (prefs.image_action.value if prefs.image_action else None, _dumps(prefs.image_options), task_id))
+            " '$.image_options', JSON_EXTRACT(%s, '$'), '$.workflow_mode', %s) WHERE id=%s",
+            (prefs.image_action.value if prefs.image_action else None, _dumps(prefs.image_options), prefs.workflow_mode.value, task_id))
 
     async def record_media_delivery(self, task_id: str, delivery: dict[str, Any],
                                     status: TaskStatus) -> None:
