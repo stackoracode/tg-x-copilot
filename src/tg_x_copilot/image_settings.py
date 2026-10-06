@@ -41,6 +41,7 @@ class ImageOption(StrEnum):
     FACTUAL_PRIORITY = "factual_priority"
     VISUAL_PRIORITY = "visual_priority"
     MINIMAL_CHANGES = "minimal_changes"
+    INFO_CARD_FALLBACK = "info_card_fallback"
 
 
 class InformationDensity(StrEnum):

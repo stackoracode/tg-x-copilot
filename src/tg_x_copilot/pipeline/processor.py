@@ -36,9 +36,10 @@ from .guards import GuardReport, XRules, check_rewrite, x_length
 from .language import is_localized
 from .image_policy import plan, media_is_owned, has_task_edit_authorization
 from .media_errors import media_error_reason
+from .image_content import sanitize_analysis, editorial_text, without_promotion, contains_promotion
 from .facts import build_verified_facts, packet_is_traceable
 from .overlays import (approved_regions, wants_region_edit, crop_region, composite_patches,
-                       unchanged_outside, validate_pixel_scope)
+                       unchanged_outside, validate_pixel_scope, PromotionScopeError)
 from .image_qc import QCMode, build_messages, qc_verdict
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
@@ -418,8 +419,9 @@ class Pipeline:
                     cfg.models.vision_model, messages, ImageAnalysis,
                     json_mode=cfg.models.json_mode,
                 )
+            analysis = sanitize_analysis(analysis)
             if not await is_localized([analysis.description, analysis.layout_description, analysis.reason,
-                                       *analysis.source_facts], locale, self.app):
+                                       *analysis.source_facts, *(mark.removal_reason for mark in analysis.mark_regions)], locale, self.app):
                 raise ValueError("vision narrative has wrong language")
             await self.app.repo.update_media_analysis(task_id, img.idx, analysis)
             return img.idx, analysis
@@ -444,8 +446,8 @@ class Pipeline:
                         analyses: dict[int, ImageAnalysis], locale: Locale,
                         cfg: AppSettings) -> Evaluation:
         notes = "\n".join(
-            f"- Image {i}: {a.image_type}; {a.description}"
-            + (f"; text ({a.text_language}): {a.extracted_text[:8000]}" if a.contains_text else "")
+            f"- Image {i}: {a.image_type}; {without_promotion(a.description, a)}"
+            + (f"; text ({a.text_language}): {editorial_text(a)[:8000]}" if a.contains_text else "")
             for i, a in sorted(analyses.items())
         ) or t(locale.code, "none")
         p = prompts.render(
@@ -470,7 +472,7 @@ class Pipeline:
                        hooks: list[dict[str, Any]], locale: Locale, cfg: AppSettings
                        ) -> tuple[RewriteResult, GuardReport]:
         # Source-derived text counts as verified; everything the LLM produced does not.
-        verified = [a.extracted_text for a in analyses.values() if a.extracted_text]
+        verified = [editorial_text(a) for a in analyses.values() if editorial_text(a)]
         unverified = evaluation.key_facts + evaluation.background_points
         hooks_text = "\n".join(f"- {h['pattern']} {t(locale.code, 'hook_example')} \"{h['example']}\""
                                for h in hooks) or "- (none)"
@@ -499,6 +501,8 @@ class Pipeline:
                 )
             report = check_rewrite(result, source_text=env.text, rules=rules,
                                    verified_facts=verified, unverified_facts=unverified, locale=locale.code)
+            if any(contains_promotion(result.post, a) for a in analyses.values()):
+                report.problems.append(t(locale.code, "guard_promotion"))
             language_ok = await is_localized(
                 [result.post, result.hook, result.added_value, result.image_brief,
                  *(claim.text for claim in result.claims)], locale, self.app)
@@ -574,6 +578,8 @@ class Pipeline:
         regional_edit = wants_region_edit(action, options)
         if only_indices is not None:
             images = [image for image in images if image.idx in only_indices]
+        packet_lock = asyncio.Lock()
+        packet_attempted = False
         m, hub, limits = cfg.models, self.app.hub, self.app.limits
         rules = prompts.render_json("image_actions", locale.code)
         option_rules = "\n".join(rules["options"][flag.value] for flag in sorted(options.flags))
@@ -601,6 +607,13 @@ class Pipeline:
                           await asyncio.to_thread(self._optimize, reference.blob.data,
                                                   graphic_hint(analyses[idx].image_type), cfg))
                 return ImageOutcome(idx, decision, reason, output)
+            nonlocal packet, packet_attempted
+            if (regional_edit and chosen == ImageAction.INFO_CARD and mode == "regenerate"
+                    and ImageOption.INFO_CARD_FALLBACK in options.flags and not packet.facts):
+                async with packet_lock:
+                    if not packet.facts and not packet_attempted:
+                        packet_attempted = True
+                        packet, _ = await self._fact_packet(task_id, env, analyses)
             if mode != "promotion_cleanup" and not packet.facts:
                 return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "image_facts_unavailable"),
                                     failure_stage=MediaFailureStage.IMAGE_POLICY)
@@ -615,6 +628,9 @@ class Pipeline:
                         "selected_regions": [region.model_dump(mode="json") for region in regions],
                         "protected_marks": [mark.model_dump(mode="json") for mark in analyses[idx].mark_regions
                                             if mark.kind != "promotion"]}, ensure_ascii=False)
+                except PromotionScopeError as exc:
+                    return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, exc.key),
+                                        failure_stage=MediaFailureStage.IMAGE_POLICY)
                 except ValueError:
                     return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "cleanup_scope_required"),
                                         failure_stage=MediaFailureStage.IMAGE_POLICY)
@@ -733,7 +749,7 @@ class Pipeline:
         stored = meta.get("source_analyses") or {
             str(row["idx"]): row["analysis"] for row in await self.app.repo.list_media(task_id)
             if row.get("analysis")}
-        sources = {int(idx): ImageAnalysis.model_validate(value) for idx, value in stored.items()}
+        sources = {int(idx): sanitize_analysis(ImageAnalysis.model_validate(value)) for idx, value in stored.items()}
         spec = ACTIONS.get(env.image_action)
         need_source = (spec is None or (spec.execution != "omit" and not spec.text_capable) or
                        wants_region_edit(env.image_action, env.image_options))

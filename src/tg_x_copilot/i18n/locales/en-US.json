@@ -346,6 +346,12 @@
     "error_invalid_image": "The service returned unreadable image data.",
     "error_http": "The upstream service returned HTTP {status}.",
     "error_rejected": "The service rejected or could not complete the request.",
-    "label_promotion_cleanup": "local promotion cleanup"
+    "label_promotion_cleanup": "local promotion cleanup",
+    "cleanup_region_uncertain": "The promotion is identified, but its edit boundary/background is uncertain. Refine the region or explicitly allow an original information-card fallback.",
+    "cleanup_content_occluded": "The promotion covers meaningful source content; minimal editing cannot invent hidden text/UI. An original information-card fallback needs explicit permission.",
+    "cleanup_card_fallback": "Using an explicitly permitted original information card because local promotion cleanup is unsafe; this does not modify the source.",
+    "image_option_info_card_fallback": "Allow an original information card if local cleanup is unsafe",
+    "draft_in_image_caption": "The X draft is included with the image(s), ready to copy.",
+    "guard_promotion": "The draft contains identified channel promotion; remove it."
   }
 }

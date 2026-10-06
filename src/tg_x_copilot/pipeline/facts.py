@@ -7,6 +7,7 @@ import json
 from .. import prompts
 from ..models import FactVerification, ImageAnalysis, InputEnvelope, VerifiedFacts
 from .guards import numbers_in
+from .image_content import editorial_text
 from .language import is_localized
 
 
@@ -17,9 +18,9 @@ async def build_verified_facts(
     sources = {
         "core": env.text,
         "images": {
-            str(idx): a.extracted_text
+            str(idx): editorial_text(a)
             for idx, a in analyses.items()
-            if not a.sensitive and a.extracted_text
+            if not a.sensitive and editorial_text(a)
         },
     }
     if not env.text and not sources["images"]:
@@ -78,7 +79,7 @@ def packet_is_traceable(
             canonical_text
             if fact.source_idx is None
             else (
-                analyses[fact.source_idx].extracted_text
+                editorial_text(analyses[fact.source_idx])
                 if fact.source_idx in analyses
                 else ""
             )

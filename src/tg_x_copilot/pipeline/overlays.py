@@ -27,6 +27,12 @@ def intersects(a: tuple, b: tuple) -> bool:
     return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
 
 
+class PromotionScopeError(ValueError):
+    def __init__(self, message: str, key: str):
+        super().__init__(message)
+        self.key = key
+
+
 def approved_regions(analysis: ImageAnalysis, options: ImageOptions, idx: int) -> list[MarkRegion]:
     if analysis.has_source_copyright_mark is True and not any(
         region.kind != "promotion" for region in analysis.mark_regions
@@ -52,8 +58,10 @@ def approved_regions(analysis: ImageAnalysis, options: ImageOptions, idx: int) -
     ):
         raise ValueError("selected region is not promotion")
     for region in candidates:
-        if not region.safe_to_remove or region.confidence < 0.9:
-            raise ValueError("promotion region is uncertain or overlaps meaningful content")
+        if region.removal_risk in ("content_occluded", "protected"):
+            raise PromotionScopeError("promotion covers meaningful/protected content", "cleanup_content_occluded")
+        if not region.safe_to_remove or region.confidence < 0.9 or region.removal_risk == "uncertain":
+            raise PromotionScopeError("promotion region is uncertain or overlaps meaningful content", "cleanup_region_uncertain")
         if any(intersects(region.box, mark.box) for mark in protected):
             raise ValueError("promotion region overlaps protected attribution")
     return candidates

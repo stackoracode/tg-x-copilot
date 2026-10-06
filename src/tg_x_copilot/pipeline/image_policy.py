@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from ..image_settings import ACTIONS, ImageAction, ImageOption, ImageOptions, MediaCategory
 from ..i18n import t
 from ..models import ImageAnalysis, ImageDecision, InputEnvelope, SourceMedia
-from .overlays import approved_regions, wants_region_edit
+from .overlays import approved_regions, wants_region_edit, PromotionScopeError
 
 _REDRAWABLE = {'chart', 'infographic', 'illustration', 'screenshot', 'photo_generic', 'meme',
                'ui_screenshot', 'mixed_layout', 'generic_visual', 'brand_asset'}
@@ -105,6 +105,10 @@ def plan(analysis: ImageAnalysis, *, requested: ImageAction | None, options: Ima
             return ImagePlan(ImageAction.KEEP, 'keep', None, t(locale, 'cleanup_no_promotion'))
         try:
             approved_regions(analysis, options, idx)
+        except PromotionScopeError as exc:
+            if ImageOption.INFO_CARD_FALLBACK in options.flags and exc.key != "cleanup_scope_protected":
+                return ImagePlan(ImageAction.INFO_CARD, 'create', 'regenerate', t(locale, 'cleanup_card_fallback'))
+            return ImagePlan(None, 'review', None, t(locale, exc.key))
         except ValueError:
             return ImagePlan(None, 'review', None, t(locale, 'cleanup_scope_required'))
         return ImagePlan(ImageAction.CLEAN_RECREATE, 'edit', 'promotion_cleanup', t(locale, 'cleanup_authorized'))

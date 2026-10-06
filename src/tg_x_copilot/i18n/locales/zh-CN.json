@@ -346,6 +346,12 @@
     "error_invalid_image": "服务返回的图片数据无效或无法读取。",
     "error_http": "上游服务返回 HTTP {status}。",
     "error_rejected": "服务拒绝请求或未能完成处理。",
-    "label_promotion_cleanup": "局部清除推广层"
+    "label_promotion_cleanup": "局部清除推广层",
+    "cleanup_region_uncertain": "已识别推广层，但编辑边界或背景仍不明确；需细化区域，或明确允许改用原创信息卡片。",
+    "cleanup_content_occluded": "推广层遮挡了原始有效内容；最小改动不能猜测恢复隐藏文字或界面。可明确允许改用原创信息卡片。",
+    "cleanup_card_fallback": "局部推广清除无法安全完成，按已勾选偏好改用原创信息卡片；未修改原图。",
+    "image_option_info_card_fallback": "局部清除不安全时允许改用原创信息卡片",
+    "draft_in_image_caption": "X 文案已随图片一同发送，可直接复制。",
+    "guard_promotion": "文案包含已识别的频道推广信息，需移除。"
   }
 }

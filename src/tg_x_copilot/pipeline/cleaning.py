@@ -20,7 +20,8 @@ _URL = re.compile(r"https?://[^\s<>]+")
 _NOISE = re.compile(
     r"^\s*(?:forwarded from\b|转发自|轉發自|(?:join|follow|subscribe)(?:\s+(?:us|our|the|this|@))\b"
     r"|(?:加入|关注|關注|订阅|訂閱)(?:我们|我們|本|频道|頻道|群|@)"
-    r"|(?:submission|contact|投稿|商务合作|商務合作|广告合作|廣告合作)\s*[:：])", re.I)
+    r"|(?:submission|contact|投稿|商务合作|商務合作|广告合作|廣告合作)\s*[:：]"
+    r"|(?:TG|Telegram|频道|頻道)\s*[:：].*(?:@[A-Za-z0-9_]+|https?://(?:t\.me|telegram\.me)/))", re.I)
 _HASHTAG = re.compile(r"(?<!\w)#\w+")
 
 

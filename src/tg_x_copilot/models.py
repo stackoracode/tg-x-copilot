@@ -149,7 +149,9 @@ class MarkRegion(BaseModel):
     # Normalized display coordinates (EXIF-corrected image), not publishing facts.
     box: tuple[float, float, float, float]
     confidence: float = Field(default=0, ge=0, le=1)
-    safe_to_remove: bool = False  # no subject/UI/meaningful text beneath or inside the region
+    safe_to_remove: bool = False  # simple background is OK; no meaningful source content
+    removal_risk: Literal["background_only", "content_occluded", "protected", "uncertain"] | None = None
+    removal_reason: str = ""
 
     @model_validator(mode="after")
     def valid_box(self):
@@ -179,6 +181,7 @@ class ImageAnalysis(BaseModel):
     text_language: str | None = None
     text_script: str | None = None  # simplified / traditional / mixed / other
     extracted_text: str = ""
+    content_text: str | None = None  # derived publishing OCR; raw OCR remains intact for QC
     quality: Literal["low", "ok", "high"] = "ok"
     relevance: float = 0.5
     sensitive: bool = False

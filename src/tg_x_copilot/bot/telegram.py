@@ -77,9 +77,11 @@ class TelegramBot:
 
     # ------------------------------------------------------------------ helpers used by pipeline
 
-    async def notify(self, chat_id: int, text: str, buttons: Any = None) -> None:
-        await self.client.send_message(chat_id, text[:_MAX_MSG], buttons=buttons,
-                                       link_preview=False)
+    async def notify(self, chat_id: int, text: str, buttons: Any = None, *, reply_to: int | None = None) -> None:
+        kwargs = {"buttons": buttons, "link_preview": False}
+        if reply_to is not None:
+            kwargs["reply_to"] = reply_to
+        await self.client.send_message(chat_id, text[:_MAX_MSG], **kwargs)
 
     async def fetch_media(self, chat_id: int, message_ids: list[int]) -> dict[int, bytes]:
         out: dict[int, bytes] = {}
@@ -155,17 +157,33 @@ class TelegramBot:
                 log.exception("R2 final asset fetch failed", extra=ctx(task_id=task_id, idx=idx))
                 fail(idx, MediaFailureStage.R2_FETCH, tr("media_stage_fetch") + " " + media_error_reason(exc, locale))
 
+        draft = task.get("draft_text") or ""
+        caption_fits = len(draft.encode("utf-16-le")) // 2 <= 1024
+        caption_sent = False
+        anchor_id = None
         for offset in range(0, len(files), 10):
             batch = files[offset:offset + 10]
             try:
-                sent = await self.client.send_file(chat_id, [bio for _, bio in batch], force_document=False)
+                # One photo uses sendMedia; albums contain 2–10 images. Put the draft on
+                # the first photo whose caption delivery is confirmed, never on a status card.
+                caption = draft if caption_fits and not caption_sent else ""
+                file_arg = batch[0][1] if len(batch) == 1 else [bio for _, bio in batch]
+                caption_arg = caption if len(batch) == 1 else [caption] + [""] * (len(batch)-1)
+                sent = await self.client.send_file(chat_id, file_arg, caption=caption_arg,
+                                                   parse_mode=None, force_document=False)
                 messages = sent if isinstance(sent, (list, tuple)) else [sent]
                 for pos, (idx, _) in enumerate(batch):
                     message = messages[pos] if pos < len(messages) else None
                     if message is None or getattr(message, "photo", None) is None:
                         fail(idx, MediaFailureStage.TELEGRAM_SEND, tr("media_stage_send"))
                     else:
-                        delivery[str(idx)] = {"sent": True, "message_id": getattr(message, "id", None)}
+                        message_id = getattr(message, "id", None)
+                        delivery[str(idx)] = {"sent": True, "message_id": message_id}
+                        if anchor_id is None:
+                            anchor_id = message_id
+                        if pos == 0 and caption:
+                            caption_sent = True
+                            delivery[str(idx)]["caption_sent"] = True
             except Exception as exc:
                 log.exception("Telegram photo send failed", extra=ctx(task_id=task_id))
                 for idx, _ in batch:
@@ -218,7 +236,10 @@ class TelegramBot:
                        if stage in (MediaFailureStage.R2_FETCH, MediaFailureStage.TELEGRAM_SEND)]
         if unavailable:
             lines.append(tr("media_unavailable", items=", ".join(f"#{i}" for i in sorted(unavailable))))
-        lines.append(tr("draft_text_follows"))
+        lines.append(tr("draft_in_image_caption" if caption_sent else "draft_text_follows"))
+        if any(m.get("decision") == "info_card" and tr("cleanup_card_fallback") in
+               (m.get("decision_reason") or "") for m in media):
+            lines.append(tr("cleanup_card_fallback"))
 
         buttons = []
         if task["status"] == "draft_ready" and not failures:
@@ -234,10 +255,12 @@ class TelegramBot:
         auth_buttons = [[Button.inline(tr("btn_confirm_edit_rights", idx=m["idx"]),
                                        f"ia:{task_id}:{m['idx']}".encode())]
                         for m in media if needs_edit_confirmation(task, m)]
-        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, *auth_buttons, [image_button]])
-        if task.get("draft_text"):
-            await self.client.send_message(chat_id, task["draft_text"], parse_mode=None,
-                                           link_preview=False)
+        await self.notify(chat_id, "\n".join(lines), buttons=[buttons, *auth_buttons, [image_button]], reply_to=anchor_id)
+        if draft and not caption_sent:
+            kwargs = {"parse_mode": None, "link_preview": False}
+            if anchor_id is not None:
+                kwargs["reply_to"] = anchor_id
+            await self.client.send_message(chat_id, draft, **kwargs)
 
     # ------------------------------------------------------------------ handlers
 
