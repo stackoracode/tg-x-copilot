@@ -1,5 +1,6 @@
 """One durable progress reply and a source-threaded publishing bundle, in both locales."""
 import asyncio
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -123,6 +124,18 @@ async def test_no_declaration_does_not_grant_edit_rights(app):
     await Pipeline(app)._load_media(TASK,envelope,app.config.current,use=True)
     assert not envelope.image_edit_authorizations
     assert not app.repo.named('save_image_edit_authorization')
+
+
+async def test_direct_uploads_owned_grants_edit_rights(app):
+    cfg = copy.deepcopy(app.config.current)
+    cfg.pipeline.direct_uploads_owned = True
+    envelope = env(media=[SourceMedia(message_id=10, kind=MediaKind.PHOTO, forwarded=False)])
+    app.telegram = Recorder(fetch_media={10: png_bytes()})
+    app.repo.returns['previous_uses'] = []
+    await Pipeline(app)._load_media(TASK, envelope, cfg, use=True)
+    assert "0" in envelope.image_edit_authorizations
+    assert app.repo.named('save_image_edit_authorization')
+
 
 
 async def test_rights_callback_is_personal_remembered_and_revocable(app):

@@ -332,10 +332,12 @@ class Repository:
         n = await self.db.execute(
             "UPDATE tasks SET status=%s, stage='images_queued', error=NULL,"
             " envelope=JSON_SET(envelope, '$.processing_mode', 'images_only',"
-            " '$.image_action', %s, '$.image_options', JSON_EXTRACT(%s, '$'), '$.workflow_mode', %s, '$.image_retry_indices', NULL)"
+            " '$.image_action', %s, '$.image_options', JSON_EXTRACT(%s, '$'), '$.workflow_mode', %s,"
+            " '$.media_edit_rights_confirmed', %s, '$.image_retry_indices', NULL)"
             " WHERE id=%s AND tg_user_id=%s AND status IN (%s,%s) AND draft_text IS NOT NULL",
             (TaskStatus.RECEIVED.value, preferences.image_action.value if preferences.image_action
-             else None, _dumps(preferences.image_options), preferences.workflow_mode.value, task_id, user_id,
+             else None, _dumps(preferences.image_options), preferences.workflow_mode.value,
+             preferences.authorized_media, task_id, user_id,
              TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value))
         return n == 1
 
