@@ -8,7 +8,13 @@ from conftest import Recorder, png_bytes
 from test_bilingual import SOURCE, good_qc
 from test_image_authorization import TASK, blocked_task
 from tg_x_copilot.bot.image_tools import payload
-from tg_x_copilot.image_settings import ImageAction, ImageOption, ImageOptions, ImagePreferences
+from tg_x_copilot.image_settings import (
+    ImageAction,
+    ImageOption,
+    ImageOptions,
+    ImagePreferences,
+    WorkflowMode,
+)
 from tg_x_copilot.i18n import t
 from tg_x_copilot.models import ImageQC, VerifiedFacts, VerifiedFact
 from tg_x_copilot.pipeline.overlays import wants_region_edit
@@ -87,7 +93,9 @@ async def test_exact_production_combination_generates_qc_saves_and_sends_caption
         TASK, app.repo.task, envelope, app.i18n.get(code), app.config.current
     )
     assert not fetch.named("fetch_media") and not app.hub.cpa.named("images_edit")
-    assert not app.hub.jev.calls and len(app.hub.cpa.named("images_generate")) == 1
+    assert not app.hub.jev.calls and len(app.hub.cpa.named("images_generate")) == (
+        2 if failure == "qc" else 1
+    )
     assert app.repo.task["draft_text"] == draft
     assert (
         app.repo.task["envelope"]["image_options"]["flags"]
@@ -222,3 +230,74 @@ async def test_legacy_nontraceable_packet_is_rebuilt_without_source_edit_or_text
     assert app.repo.task["draft_meta"]["verified_facts"] == packet.model_dump(mode="json")
     assert app.repo.media[1]["asset_kind"] == "final"
     assert b.client.named("send_file")[0][1]["caption"] == draft
+
+
+async def test_manual_rerun_qc_allows_numbers_from_envelope_text(app):
+    b, original, analysis, image, fetch = await blocked_task(app, "zh-CN")
+    envelope = original.model_copy(
+        update={
+            "image_action": ImageAction.GENERATE,
+            "processing_mode": "images_only",
+            "image_retry_indices": None,
+            "text": "最新大模型2维卷3维，支持教育平权",
+        }
+    )
+    app.repo.task["envelope"] = envelope.model_dump(mode="json")
+    meta = app.repo.task["draft_meta"]
+    meta["canonical_text"] = envelope.text
+    meta["verified_facts"] = VerifiedFacts(
+        facts=[VerifiedFact(text="支持教育平权", evidence="教育平权")]
+    ).model_dump(mode="json")
+    meta["source_analyses"] = {"0": analysis.model_dump(mode="json")}
+
+    app.hub.cpa.returns.update(
+        chat_json=good_qc(rendered_text="2维到3维"),
+        images_generate=png_bytes("blue"),
+    )
+    await Pipeline(app)._process_images_only(
+        TASK, app.repo.task, envelope, app.i18n.get("zh-CN"), app.config.current
+    )
+    assert app.repo.media[1]["asset_kind"] == "final"
+    assert app.repo.task["draft_meta"]["delivery"]["1"]["sent"] is True
+
+
+async def test_manual_rerun_retries_with_feedback_on_initial_qc_failure(app):
+    b, original, analysis, image, fetch = await blocked_task(app, "zh-CN")
+    envelope = original.model_copy(
+        update={
+            "image_action": ImageAction.INFO_CARD,
+            "processing_mode": "images_only",
+            "image_retry_indices": None,
+            "workflow_mode": WorkflowMode.MANUAL,
+        }
+    )
+    app.repo.task["envelope"] = envelope.model_dump(mode="json")
+    meta = app.repo.task["draft_meta"]
+    meta["canonical_text"] = SOURCE
+    meta["source_analyses"] = {"0": analysis.model_dump(mode="json")}
+    meta["verified_facts"] = VerifiedFacts(
+        facts=[VerifiedFact(text="新功能支持 12 台设备。", evidence=SOURCE)]
+    ).model_dump(mode="json")
+
+    tries = 0
+
+    def qc_with_retry(model, messages, schema, **kw):
+        nonlocal tries
+        tries += 1
+        if tries == 1:
+            # First attempt fails QC due to English text
+            return good_qc(language_consistent=False, rendered_text="12")
+        # Second attempt passes
+        return good_qc(language_consistent=True, rendered_text="12")
+
+    app.hub.cpa.returns.update(
+        chat_json=qc_with_retry,
+        images_generate=png_bytes("blue"),
+    )
+    await Pipeline(app)._process_images_only(
+        TASK, app.repo.task, envelope, app.i18n.get("zh-CN"), app.config.current
+    )
+    assert tries == 2
+    assert len(app.hub.cpa.named("images_generate")) == 2
+    assert app.repo.media[1]["asset_kind"] == "final"
+    assert app.repo.task["draft_meta"]["delivery"]["1"]["sent"] is True
