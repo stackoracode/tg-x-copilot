@@ -692,8 +692,7 @@ class Pipeline:
                 except ValueError:
                     return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "cleanup_scope_required"),
                                         failure_stage=MediaFailureStage.IMAGE_POLICY)
-            attempts = 2 if (env.workflow_mode == WorkflowMode.AUTO_BUNDLE and
-                             execution == "create" and mode == "regenerate") else 1
+            attempts = 2 if (execution == "create" and mode == "regenerate") else 1
             feedback = ""
             for attempt in range(1, attempts + 1):
                 try:
@@ -726,9 +725,11 @@ class Pipeline:
                     await self._event(task_id, "IMAGE2", f"image {idx}: processing failed", level="warning")
                     return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "media_stage_image2") + " " + media_error_reason(exc, ui_locale),
                                         failure_stage=MediaFailureStage.IMAGE2)
+                ref_text = (analyses[reference.idx].extracted_text if reference and reference.idx in analyses
+                            else "\n".join(a.extracted_text for a in analyses.values() if a.extracted_text))
                 passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
                     facts=generation_facts(reference), post=rewrite.post,
-                    source_text=(analyses[reference.idx].extracted_text if reference else ""),
+                    source_text=ref_text,
                     cleanup_contract=cleanup_contract, cleanup_regions=regions, task_id=task_id)
                 await self._event(task_id, "IMAGE_QC", f"image {idx}: {'passed' if passed else qc_reason}",
                                   level="info" if passed else "warning")
@@ -889,6 +890,10 @@ class Pipeline:
                   ) -> tuple[bool, str]:
         """Visual verification of one Image2 output. Errors count as a failed check."""
         allowed = [facts]  # generated draft is never verification evidence
+        if env.text:
+            allowed.append(env.text)
+        if source_text:
+            allowed.append(source_text)
         if mode == "promotion_cleanup":
             if reference is None or not cleanup_regions or not cleanup_contract:
                 return False, t(env.locale, "cleanup_scope_required")
@@ -899,7 +904,7 @@ class Pipeline:
                     contract.get("selected_regions") != [r.model_dump(mode="json") for r in cleanup_regions] or
                     not wants_region_edit(env.image_action, env.image_options) or
                     not (media_is_owned(reference.source, env, owned_ids=set(cfg.pipeline.owned_source_ids),
-                                       direct_uploads_owned=cfg.pipeline.direct_uploads_owned) or
+                                        direct_uploads_owned=cfg.pipeline.direct_uploads_owned) or
                          has_task_edit_authorization(env, task_id=task_id, idx=reference.idx,
                                                      source_sha256=reference.blob.sha256))):
                     return False, t(env.locale, "cleanup_scope_required")
@@ -907,8 +912,6 @@ class Pipeline:
                 return False, t(env.locale, "cleanup_scope_required")
             if not await asyncio.to_thread(unchanged_outside, reference.blob.data, candidate.data, cleanup_regions):
                 return False, t(env.locale, "cleanup_pixel_failure")
-        if mode in ("enhance", "localize", "promotion_cleanup"):
-            allowed.append(source_text)  # unchanged facts on authorized source edits
         try:
             messages = build_messages(
                 mode, locale=locale.code, market=env.market, language_name=locale.language_name,

@@ -17,7 +17,7 @@ Check each dimension and answer true only if it is clearly fine:
 - brands_consistent: brand names and visible logos match the source brands, identity and meaning; no invented, distorted or substituted brand/logo. Omission of a channel promotion overlay in an original recreation is allowed.
 - people_consistent: for enhance/localize, no people added, removed or altered; for regenerate, the source people/composition need not be reproduced, but no realistic likeness of real people or fake documentary/news imagery is allowed.
 - watermarks_ok: for enhance/localize, protected source/author/copyright marks are unchanged; for promotion_cleanup, ONLY contract-listed promotion removals are allowed and all protected marks must remain; for regenerate, no channel promotion and only accurate source-supported brand names/logos, never distorted brand relationships.
-- facts_consistent: nothing in the image contradicts or goes beyond the facts below.
+- facts_consistent: nothing in the image contradicts or goes beyond the facts below; thematic conceptual diagrams, scientific illustrations and visual layouts that support the topic are valid visual representations and are not unprovided facts.
 
 `rendered_text` must contain ALL text visible in the CANDIDATE, verbatim.
 Compare against the actual source image whenever provided. If extracted reference facts conflict with the source image, fail; never treat a draft or mistaken extraction as proof.
