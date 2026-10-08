@@ -79,6 +79,7 @@
     "storage_budget": "R2 存储额度已用完，图片不可用。",
     "images_review": "{count} 张图片需要审核（请查看图片处理结果）。",
     "jev_review": "Jev 提示需人工审核：{reason}",
+    "evaluation_review": "评估提示需人工核验：{reason}",
     "jev_disabled": "Jev 已关闭，由主模型判断。",
     "jev_unconfigured": "Jev 未配置，由主模型判断。",
     "jev_no_text": "文字不足以供 Jev 判断，由视觉模型和主模型处理。",

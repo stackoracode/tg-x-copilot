@@ -162,10 +162,9 @@ class Pipeline:
         triage = await self._triage(task_id, env, locale)
         if env.is_direct:
             # Direct user/operator submission (not forwarded): always process directly, no skipping or warnings
-            triage = triage.model_copy(update={"route": "process", "use_media": bool(env.media), "reasons": []})
-        elif (env.workflow_mode == WorkflowMode.AUTO_BUNDLE and triage.route == "skip"
-                and (env.text.strip() or env.media)):
-            # Keep Jev's judgment and warnings; let the main evaluator inspect requested bundles.
+            triage = triage.model_copy(update={"route": "proceed", "use_media": bool(env.media), "reasons": []})
+        elif (triage.route == "skip" and (env.text.strip() or env.media)):
+            # Keep Jev's judgment and warnings; let the main evaluator inspect requested bundles or forwarded materials.
             triage = triage.model_copy(update={"route": "review", "escalated": True,
                 "use_media": bool(env.media), "reasons": [*triage.reasons, t(env.locale, "auto_bundle_evaluate")]})
         await repo.save_triage(task_id, triage)
@@ -201,14 +200,20 @@ class Pipeline:
         await self._event(task_id, "evaluate",
                           f"suitable={evaluation.suitable} value={evaluation.value_score:.2f}: "
                           f"{evaluation.reason}", data=evaluation.model_dump())
-        if not evaluation.suitable:
-            await self._skip(task_id, env, evaluation.reason)
-            return
+        was_suitable = evaluation.suitable
+        if not was_suitable:
+            if env.is_direct or bool(env.media) or env.workflow_mode == WorkflowMode.AUTO_BUNDLE or bool(env.text.strip()):
+                # Do not discard operator submissions or media tasks.
+                # Force suitable=True so rewrite generates a draft from available facts and observations.
+                evaluation = evaluation.model_copy(update={"suitable": True})
+            else:
+                await self._skip(task_id, env, evaluation.reason)
+                return
 
         await repo.set_stage(task_id, "rewrite")
         knowledge = prompts.render_json("knowledge", locale.code)
         rules_dict = {**knowledge["rules"],
-                      **await repo.get_rules(env.locale, env.market)}
+                      **(await repo.get_rules(env.locale, env.market) or {})}
         if cfg.pipeline.max_post_chars:
             rules_dict["max_chars"] = cfg.pipeline.max_post_chars
         rules = XRules.from_db(rules_dict)
@@ -241,6 +246,8 @@ class Pipeline:
         review = list(report.review)  # must be checked by a human, then may be approved
         if not env.is_direct and triage.route == "review":
             review.append(t(env.locale, "jev_review", reason=" ".join(triage.reasons)))
+        if not was_suitable and not env.is_direct and evaluation.reason:
+            review.append(t(env.locale, "evaluation_review", reason=evaluation.reason))
         text_review = list(review)
         media_review = [r for r in media_results if r.decision == ImageDecision.REVIEW]
         if media_review:
@@ -265,6 +272,7 @@ class Pipeline:
             "problems": problems,
             "review": review,
             "warnings": report.warnings + dup_warnings + fact_warnings +
+                        ([evaluation.reason] if not was_suitable and evaluation.reason else []) +
                         ([t(env.locale, "clean_failed")] if clean_fallback else []),
             "risks": evaluation.risks,
             "media": [r.model_dump(mode="json") for r in media_results],
@@ -449,17 +457,18 @@ class Pipeline:
                      "image_url": {"url": image_data_url(img.blob.data, img.blob.mime)}},
                 ]},
             ]
-            async with self.app.limits.vision:
-                analysis = await self.app.hub.cpa.chat_json(
-                    cfg.models.vision_model, messages, ImageAnalysis,
-                    json_mode=cfg.models.json_mode,
-                )
-            analysis = sanitize_analysis(analysis)
-            if not await is_localized([analysis.description, analysis.layout_description, analysis.reason,
-                                       *analysis.source_facts, *(mark.removal_reason for mark in analysis.mark_regions)], locale, self.app):
-                raise ValueError("vision narrative has wrong language")
-            await self.app.repo.update_media_analysis(task_id, img.idx, analysis)
-            return img.idx, analysis
+            for _ in range(max(1, cfg.pipeline.max_rewrite_attempts)):
+                async with self.app.limits.vision:
+                    analysis = await self.app.hub.cpa.chat_json(
+                        cfg.models.vision_model, messages, ImageAnalysis,
+                        json_mode=cfg.models.json_mode,
+                    )
+                analysis = sanitize_analysis(analysis)
+                if await is_localized([analysis.description, analysis.layout_description, analysis.reason],
+                                      locale, self.app):
+                    await self.app.repo.update_media_analysis(task_id, img.idx, analysis)
+                    return img.idx, analysis
+            raise ValueError("vision narrative has wrong language")
 
         results = await asyncio.gather(*(one(i) for i in images), return_exceptions=True)
         analyses: dict[int, ImageAnalysis] = {}
