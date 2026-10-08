@@ -105,7 +105,13 @@ async def task_detail(request: Request, task_id: str) -> HTMLResponse:
 @router.post("/tasks/{task_id}/{action}")
 async def task_action(request: Request, task_id: str, action: str) -> RedirectResponse:
     ops = _ctx(request).ops
-    handlers = {"approve": ops.approve, "reject": ops.reject, "regenerate": ops.regenerate}
+    handlers = {
+        "approve": ops.approve,
+        "publish": ops.publish,
+        "not_publish": ops.not_publish,
+        "reject": ops.reject,
+        "regenerate": ops.regenerate,
+    }
     if action not in handlers:
         raise HTTPException(404)
     _, msg = await handlers[action](task_id)

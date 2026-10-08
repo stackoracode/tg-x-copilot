@@ -160,7 +160,10 @@ class Pipeline:
         # 1. Jev sees only core content, before any media download.
         await repo.set_stage(task_id, "triage")
         triage = await self._triage(task_id, env, locale)
-        if (env.workflow_mode == WorkflowMode.AUTO_BUNDLE and triage.route == "skip"
+        if env.is_direct:
+            # Direct user/operator submission (not forwarded): always process directly, no skipping or warnings
+            triage = triage.model_copy(update={"route": "process", "use_media": bool(env.media), "reasons": []})
+        elif (env.workflow_mode == WorkflowMode.AUTO_BUNDLE and triage.route == "skip"
                 and (env.text.strip() or env.media)):
             # Keep Jev's judgment and warnings; let the main evaluator inspect requested bundles.
             triage = triage.model_copy(update={"route": "review", "escalated": True,
@@ -236,14 +239,17 @@ class Pipeline:
 
         problems = list(report.problems)  # blocking: cannot be approved
         review = list(report.review)  # must be checked by a human, then may be approved
-        if triage.route == "review":
+        if not env.is_direct and triage.route == "review":
             review.append(t(env.locale, "jev_review", reason=" ".join(triage.reasons)))
         text_review = list(review)
         media_review = [r for r in media_results if r.decision == ImageDecision.REVIEW]
         if media_review:
             review.append(t(env.locale, "images_review", count=len(media_review)))
-        status = (TaskStatus.DRAFT_READY if not problems and not review
-                  else TaskStatus.NEEDS_REVIEW)
+        if env.is_direct:
+            status = TaskStatus.DRAFT_READY if not problems else TaskStatus.NEEDS_REVIEW
+        else:
+            status = (TaskStatus.DRAFT_READY if not problems and not review
+                      else TaskStatus.NEEDS_REVIEW)
         meta = {
             "verified_facts": packet.model_dump(mode="json"),
             "canonical_text": env.text,
@@ -416,7 +422,7 @@ class Pipeline:
                 warnings.append(t(env.locale, "media_duplicate", idx=idx, task_id=prev["task_id"][:8],
                                   status=label(env.locale, prev["status"])))
                 break
-            if env.media_edit_rights_confirmed or (cfg.pipeline.direct_uploads_owned and sm.forwarded is False):
+            if env.media_edit_rights_confirmed or (cfg.pipeline.direct_uploads_owned and (env.is_direct or sm.forwarded is False)):
                 authorization = ImageEditAuthorization(task_id=task_id, image_idx=idx,
                     source_sha256=blob.sha256, user_id=env.user_id)
                 await repo.save_image_edit_authorization(task_id, authorization)
@@ -532,7 +538,8 @@ class Pipeline:
                     temperature=cfg.models.text_temperature, json_mode=cfg.models.json_mode,
                 )
             report = check_rewrite(result, source_text=env.text, rules=rules,
-                                   verified_facts=verified, unverified_facts=unverified, locale=locale.code)
+                                   verified_facts=verified, unverified_facts=unverified, locale=locale.code,
+                                   is_direct=env.is_direct)
             if has_unwanted_publishing_frame(result.post, locale.code):
                 report.problems.append(t(locale.code, "guard_publish_style"))
             if any(contains_promotion(result.post, a) for a in analyses.values()):

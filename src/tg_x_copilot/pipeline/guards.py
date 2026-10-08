@@ -88,7 +88,8 @@ def similarity(a: str, b: str) -> float:
 def check_rewrite(result: RewriteResult, *, source_text: str, rules: XRules,
                   verified_facts: list[str] | None = None,
                   unverified_facts: list[str] | None = None,
-                  locale: str = "en-US") -> GuardReport:
+                  locale: str = "en-US",
+                  is_direct: bool = False) -> GuardReport:
     """verified_facts: text taken from the source itself (e.g. text read from its images).
     unverified_facts: LLM-produced material (editor key facts, background points). Numbers
     backed only by these, and any `background` claim, require human review."""
@@ -128,40 +129,41 @@ def check_rewrite(result: RewriteResult, *, source_text: str, rules: XRules,
     if len(shouting) >= 2:
         report.problems.append(tr("guard_caps", items=", ".join(shouting[:5])))
 
-    if result.is_mere_translation:
-        report.problems.append(tr("guard_translation"))
-    if not result.added_value.strip():
-        report.problems.append(tr("guard_value"))
+    if not is_direct:
+        if result.is_mere_translation:
+            report.problems.append(tr("guard_translation"))
+        if not result.added_value.strip():
+            report.problems.append(tr("guard_value"))
 
-    sim = similarity(source_text, post)
-    if sim >= rules.similarity_threshold:
-        report.problems.append(tr("guard_similarity", value=f"{sim:.2f}"))
+        sim = similarity(source_text, post)
+        if sim >= rules.similarity_threshold:
+            report.problems.append(tr("guard_similarity", value=f"{sim:.2f}"))
 
-    # Fabrication signal: every number must be traceable. Numbers absent everywhere block the
-    # draft; numbers backed only by LLM-produced facts need a human check.
-    verified = numbers_in(source_text)
-    for fact in verified_facts or []:
-        verified |= numbers_in(fact)
-    unverified: set[str] = set()
-    for fact in unverified_facts or []:
-        unverified |= numbers_in(fact)
-    post_numbers = numbers_in(post)
-    unknown = sorted(n for n in post_numbers if n not in verified and n not in unverified)
-    if unknown:
-        report.problems.append(
-            tr("guard_numbers", items=", ".join(unknown))
-        )
-    llm_only = sorted(n for n in post_numbers if n not in verified and n in unverified)
-    if llm_only:
-        report.review.append(
-            tr("guard_llm_numbers", items=", ".join(llm_only))
-        )
+        # Fabrication signal: every number must be traceable. Numbers absent everywhere block the
+        # draft; numbers backed only by LLM-produced facts need a human check.
+        verified = numbers_in(source_text)
+        for fact in verified_facts or []:
+            verified |= numbers_in(fact)
+        unverified: set[str] = set()
+        for fact in unverified_facts or []:
+            unverified |= numbers_in(fact)
+        post_numbers = numbers_in(post)
+        unknown = sorted(n for n in post_numbers if n not in verified and n not in unverified)
+        if unknown:
+            report.problems.append(
+                tr("guard_numbers", items=", ".join(unknown))
+            )
+        llm_only = sorted(n for n in post_numbers if n not in verified and n in unverified)
+        if llm_only:
+            report.review.append(
+                tr("guard_llm_numbers", items=", ".join(llm_only))
+            )
 
-    # Background facts added by the LLM are unverified: they require review, not just a warning.
-    # Opinions/explanations (basis "opinion") assert no new fact and are allowed as-is.
-    for claim in result.claims:
-        if claim.basis == "background":
-            report.review.append(tr("guard_background", claim=claim.text))
+        # Background facts added by the LLM are unverified: they require review, not just a warning.
+        # Opinions/explanations (basis "opinion") assert no new fact and are allowed as-is.
+        for claim in result.claims:
+            if claim.basis == "background":
+                report.review.append(tr("guard_background", claim=claim.text))
     return report
 
 

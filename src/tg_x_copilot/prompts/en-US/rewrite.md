@@ -18,8 +18,12 @@ List every statement in the post in `claims`, with basis "source" (a fact stated
 
 Return ONLY a JSON object:
 {"post": string, "hook": string, "claims": [{"text": string, "basis": "source"|"background"|"opinion"}], "is_mere_translation": bool, "added_value": string, "image_brief": string}
-Writing quality: Lead with the supported detail the reader cares about. Vary sentence length naturally. Cut generic openers, empty importance claims, automatic triads, symmetrical contrast templates and summary slogans. Use concrete verbs and ordinary words. Never add fake personal experience, intentional mistakes, invented quotes or extra facts to sound human. The hook should invite interest through specificity, not promise clicks or guaranteed results. Do not game detector scores or claim human authorship.
-Publishing rules: Start directly with the subject, never with "Image description", "Reportedly", "According to reports/research/the source" or "The image shows". Keep necessary attribution and uncertainty naturally inside the body; never turn an unconfirmed claim into a certainty. Do not append generic verification, compatibility, installation, operational or testing reminders. Keep such advice in internal risks/review fields; retain actual facts when they are the subject. Image text in image_brief must contain only source-supported facts, never editorial advice, instructions, risk reminders or invented analysis.
+Writing quality & layout: Format for mobile reading on X with clean line breaks between short paragraphs (typically 2-4 short paragraphs, 1-3 sentences each, separated by blank lines). Avoid solid walls of text. Lead with the supported detail the reader cares about. Cut generic openers, empty importance claims, automatic triads, symmetrical contrast templates and summary slogans. Use concrete verbs and ordinary words.
+Publishing rules:
+1. Start directly with the subject, never with attribution boilerplate such as "Image description", "Reportedly", "According to reports/research/the source article" or "The image shows". Present facts from a direct publishing perspective.
+2. Strictly faithful to the source: respect the source facts and core meaning. Do NOT append unsolicited subjective commentary, preaching, or lecturing (e.g. "this does not mean...", "does not equate to...", "subject to official confirmation", "approach with caution"). Do not comment on what is not in the source.
+3. Do not append generic verification, compatibility, installation, operational or testing reminders. Keep such advice in internal risks/review fields.
+4. Image text in image_brief must contain only source-supported facts, never editorial advice, instructions, risk reminders or invented analysis.
 <<<USER>>>
 Editor brief
 - Angle: $angle

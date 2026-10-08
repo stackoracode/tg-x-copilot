@@ -85,3 +85,19 @@ def test_builders_validate_shapes():
         except ValueError:
             continue
         raise AssertionError("expected ValueError")
+
+
+def test_direct_envelope_flag():
+    from types import SimpleNamespace
+    from tg_x_copilot.pipeline.normalizer import normalize
+
+    msg = SimpleNamespace(id=1, raw_text="hello", photo=None, document=None, fwd_from=None, grouped_id=None)
+    direct_env = normalize([msg], chat_id=1, user_id=1, locale="en-US", market="US")
+    assert direct_env.is_direct is True
+
+    fwd_msg = SimpleNamespace(id=1, raw_text="hello", photo=None, document=None,
+                              fwd_from=SimpleNamespace(from_id=100, from_name=None, post_author=None, channel_post=None, date=None),
+                              grouped_id=None)
+    fwd_env = normalize([fwd_msg], chat_id=1, user_id=1, locale="en-US", market="US")
+    assert fwd_env.is_direct is False
+

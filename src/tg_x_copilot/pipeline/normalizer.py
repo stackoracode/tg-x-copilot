@@ -123,6 +123,7 @@ def normalize(messages: Iterable[Any], *, chat_id: int, user_id: int, locale: st
         urls=urls,
         media=media,
         forwards=forwards,
+        is_direct=not bool(forwards),
         locale=locale,
         market=market,
     )

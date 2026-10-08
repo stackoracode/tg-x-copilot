@@ -18,11 +18,13 @@ class TaskStatus(StrEnum):
     DRAFT_READY = "draft_ready"
     NEEDS_REVIEW = "needs_review"
     APPROVED = "approved"
+    PUBLISHED = "published"
+    NOT_PUBLISHED = "not_published"
     REJECTED = "rejected"
     FAILED = "failed"
 
 
-TERMINAL = {TaskStatus.APPROVED, TaskStatus.REJECTED}
+TERMINAL = {TaskStatus.APPROVED, TaskStatus.REJECTED, TaskStatus.PUBLISHED, TaskStatus.NOT_PUBLISHED}
 
 
 class MediaKind(StrEnum):
@@ -96,6 +98,7 @@ class InputEnvelope(BaseModel):
     processing_mode: Literal["full", "images_only"] = "full"
     image_retry_indices: list[int] | None = None
     image_edit_authorizations: dict[str, ImageEditAuthorization] = Field(default_factory=dict)
+    is_direct: bool = False  # True when sent directly by operator (not forwarded)
     locale: str = "en-US"
     market: str = "US"
     received_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

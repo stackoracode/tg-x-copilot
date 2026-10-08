@@ -65,6 +65,14 @@ async def clean_bundle(env: InputEnvelope, app) -> tuple[InputEnvelope, bool]:
     LLM failure or invented numbers uses the deterministic result and records a warning.
     Cancellation propagates, preserving worker timeout and graceful shutdown behavior.
     """
+    if env.is_direct:
+        # Operator directly typed or sent this message (not forwarded).
+        # Preserve original text directly without stripping or LLM extraction loss.
+        source = env.message_texts or ([env.text] if env.text else [])
+        canonical = "\n\n".join(preclean(t) for t in source if t.strip()) or env.text
+        urls = list(dict.fromkeys(_URL.findall(canonical) + env.urls))
+        return env.model_copy(update={'text': canonical, 'message_texts': [canonical] if canonical else [], 'message_urls': [], 'urls': urls}), False
+
     cfg = app.config.current
     source = env.message_texts or ([env.text] if env.text else [])
     cores: list[str] = []
