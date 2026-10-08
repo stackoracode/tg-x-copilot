@@ -171,11 +171,47 @@ class Ops:
             f"{freed} R2 object(s) deleted; retain_approved_assets={retain}")
         return True, self.t("ops_approved")
 
+    async def publish(self, task_id: str) -> tuple[bool, str]:
+        task = await self.app.repo.get_task(task_id)
+        if not task:
+            return False, self.t("not_found")
+        meta = task.get("draft_meta") or {}
+        status = task["status"]
+        if status == TaskStatus.NEEDS_REVIEW.value and meta.get("problems"):
+            return False, self.t("blocking")
+        if status not in (TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value, TaskStatus.APPROVED.value):
+            return False, self.t("cannot_publish", status=label(self.app.config.current.default_locale, status))
+        await self.app.repo.set_status(task_id, TaskStatus.PUBLISHED, stage="done")
+        retain = self.app.config.current.storage.retain_approved_assets
+        kinds = ("review",) if retain else ("final", "review")
+        try:
+            freed = await self.app.storage.release_task(task_id, kinds=kinds)
+        except Exception:
+            log.exception("releasing assets on publish failed (non-fatal)")
+            freed = 0
+        await self.app.repo.add_event(
+            task_id, "publish",
+            f"published by operator (from {status}); "
+            f"{freed} R2 object(s) deleted; retain_approved_assets={retain}")
+        return True, self.t("ops_published")
+
+    async def not_publish(self, task_id: str) -> tuple[bool, str]:
+        task = await self.app.repo.get_task(task_id)
+        if not task:
+            return False, self.t("not_found")
+        if task["status"] in (TaskStatus.PUBLISHED.value, TaskStatus.PROCESSING.value):
+            return False, self.t("cannot_not_publish", status=label(self.app.config.current.default_locale, task["status"]))
+        await self.app.repo.set_status(task_id, TaskStatus.NOT_PUBLISHED, stage="done")
+        freed = await self.app.storage.release_task(task_id)
+        await self.app.repo.add_event(task_id, "not_publish",
+                                      f"marked not published by operator; {freed} R2 object(s) deleted")
+        return True, self.t("ops_not_published")
+
     async def reject(self, task_id: str) -> tuple[bool, str]:
         task = await self.app.repo.get_task(task_id)
         if not task:
             return False, self.t("not_found")
-        if task["status"] in (TaskStatus.APPROVED.value, TaskStatus.PROCESSING.value):
+        if task["status"] in (TaskStatus.APPROVED.value, TaskStatus.PROCESSING.value, TaskStatus.PUBLISHED.value):
             return False, self.t("cannot_reject", status=label(self.app.config.current.default_locale, task["status"]))
         await self.app.repo.set_status(task_id, TaskStatus.REJECTED, stage="done")
         freed = await self.app.storage.release_task(task_id)
@@ -188,7 +224,8 @@ class Ops:
         if not task:
             return False, self.t("not_found")
         allowed = {TaskStatus.DRAFT_READY, TaskStatus.NEEDS_REVIEW, TaskStatus.SKIPPED,
-                   TaskStatus.FAILED, TaskStatus.REJECTED}
+                   TaskStatus.FAILED, TaskStatus.REJECTED, TaskStatus.APPROVED,
+                   TaskStatus.PUBLISHED, TaskStatus.NOT_PUBLISHED}
         if TaskStatus(task["status"]) not in allowed:
             return False, self.t("cannot_regenerate", status=label(self.app.config.current.default_locale, task["status"]))
         await self.app.storage.release_task(task_id)  # media is re-fetched from Telegram

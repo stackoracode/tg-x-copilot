@@ -257,6 +257,7 @@ async def test_telegram_delivers_all_images_draft_buttons_and_localized_reasons(
     assert not wrong_language(info[1], code)
     texts = [button.text for row in kwargs['buttons'] for button in row]
     assert t(code, 'btn_regenerate') in texts and t(code, 'btn_approve_reviewed') in texts
+    assert t(code, 'btn_publish') in texts and t(code, 'btn_not_publish') in texts
     if code == 'zh-CN':
         assert '需要审核' in info[1] and '重绘' in info[1]
         assert not any(word in info[1] for word in ('review', 'recreate', 'Draft', 'QC'))

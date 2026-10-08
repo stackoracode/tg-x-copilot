@@ -7,8 +7,10 @@
   {% if task.locale != locale %}<p class="muted">{{ t('admin_Locale mismatch') }}</p>{% endif %}
   {% if task.error %}<pre class="bad">{{ t("task_failure") }}</pre>{% endif %}
   <form class="inline" method="post" action="/tasks/{{ task.id }}/approve">{% set blocking = (task.draft_meta or {}).problems %}<button class="primary" {% if not (task.status == "draft_ready" or (task.status == "needs_review" and not blocking)) %}disabled{% endif %}>{% if task.status == "needs_review" %}{{ t('admin_Approve (reviewed)') }}{% else %}{{ t('admin_Approve') }}{% endif %}</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/publish">{% set blocking = (task.draft_meta or {}).problems %}<button class="primary" {% if task.status == "published" or ((task.status not in ["draft_ready", "needs_review", "approved"]) or (task.status == "needs_review" and blocking)) %}disabled{% endif %}>{{ t('admin_Mark published') }}</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/not_publish"><button {% if task.status in ["not_published", "published", "processing"] %}disabled{% endif %}>{{ t('admin_Not published') }}</button></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/regenerate"><button>{{ t('admin_Regenerate') }}</button></form>
-  <form class="inline" method="post" action="/tasks/{{ task.id }}/reject"><button>{{ t('admin_Reject') }}</button></form>
+  <form class="inline" method="post" action="/tasks/{{ task.id }}/reject"><button {% if task.status in ["approved", "processing", "published"] %}disabled{% endif %}>{{ t('admin_Reject') }}</button></form>
 </div>
 
 <div class="card">

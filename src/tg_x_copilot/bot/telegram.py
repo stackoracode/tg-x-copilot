@@ -395,8 +395,9 @@ class TelegramBot:
         elif (task["status"] == "needs_review" or failures) and not problems:
             buttons.append(Button.inline(tr("btn_approve_reviewed"),
                                          f"t:a:{task_id}".encode()))
+        buttons.append(Button.inline(tr("btn_publish"), f"t:p:{task_id}".encode()))
         buttons += [Button.inline(tr("btn_regenerate"), f"t:g:{task_id}".encode()),
-                    Button.inline(tr("btn_reject"), f"t:r:{task_id}".encode())]
+                    Button.inline(tr("btn_not_publish"), f"t:np:{task_id}".encode())]
         if meta.get("image_locale") and meta["image_locale"] != locale:
             lines.append(tr("image_target_locale", locale=meta["image_locale"]))
         image_button = Button.inline(tr("btn_image_tools"), f"it:{task_id}:v:main".encode())
@@ -569,10 +570,26 @@ class TelegramBot:
                 task = await self.app.repo.get_task(task_id)
                 await event.respond(self.t("approved", task_id=task_id))
                 if task and task.get("draft_text"):
-                    await self.client.send_message(event.chat_id, task["draft_text"],
-                                                   parse_mode=None, link_preview=False)
+                    await self.client.send_message(
+                        event.chat_id, task["draft_text"],
+                        parse_mode=None, link_preview=False,
+                        buttons=[[
+                            Button.inline(self.t("btn_publish"), f"t:p:{task_id}".encode()),
+                            Button.inline(self.t("btn_not_publish"), f"t:np:{task_id}".encode()),
+                        ]]
+                    )
             else:
                 await event.respond(self.t("action_failed", result=esc(msg)))
+        elif action == "p":
+            ok, msg = await ops.publish(task_id)
+            await event.answer(msg)
+            await event.respond(self.t("published", task_id=task_id) if ok
+                                else self.t("action_failed", result=esc(msg)))
+        elif action == "np":
+            ok, msg = await ops.not_publish(task_id)
+            await event.answer(msg)
+            await event.respond(self.t("not_published", task_id=task_id) if ok
+                                else self.t("action_failed", result=esc(msg)))
         elif action == "r":
             ok, msg = await ops.reject(task_id)
             await event.answer(msg)

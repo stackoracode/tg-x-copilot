@@ -91,3 +91,25 @@ def test_long_post_allowed_with_higher_max_chars():
     assert report_premium.ok
 
 
+def test_direct_input_bypasses_similarity_translation_and_fabrication():
+    src = "The city council approved a new bike lane plan for downtown streets on Monday."
+    # Standard check flags similarity and translation
+    report_standard = check_rewrite(_r(src, is_mere_translation=True), source_text=src, rules=RULES)
+    assert any("Too close" in p for p in report_standard.problems)
+    assert any("translates" in p.lower() for p in report_standard.problems)
+
+    # Direct input skips similarity, translation, and unverified number checks
+    report_direct = check_rewrite(_r(src, is_mere_translation=True), source_text=src, rules=RULES, is_direct=True)
+    assert not any("Too close" in p for p in report_direct.problems)
+    assert not any("translates" in p.lower() for p in report_direct.problems)
+
+
+def test_publishing_style_blocks_new_attribution_phrases():
+    from tg_x_copilot.pipeline.guards import has_unwanted_publishing_frame
+    assert has_unwanted_publishing_frame("据报道，产品发布了。", "zh-CN")
+    assert has_unwanted_publishing_frame("来源文章称，功能上线。", "zh-CN")
+    assert has_unwanted_publishing_frame("原文称，系统更新。", "zh-CN")
+    assert not has_unwanted_publishing_frame("Acme 宣布新功能发布。\n\n支持多种新特性。", "zh-CN")
+
+
+

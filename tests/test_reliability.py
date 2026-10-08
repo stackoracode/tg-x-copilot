@@ -388,3 +388,21 @@ async def test_needs_review_can_be_approved_only_without_blocking_problems(app):
 def test_limits_include_all_workloads(settings):
     lim = Limits.from_settings(settings.concurrency)
     assert {"jev", "text", "vision", "image", "db", "io"} <= set(vars(lim))
+
+
+async def test_publish_and_not_publish_lifecycle(app):
+    ok, _ = await _ops(app, "draft_ready").publish("t1")
+    assert ok
+    assert app.repo.named("set_status")[-1][0][1] == TaskStatus.PUBLISHED
+
+    ok, _ = await _ops(app, "approved").publish("t1")
+    assert ok
+    assert app.repo.named("set_status")[-1][0][1] == TaskStatus.PUBLISHED
+
+    ok, msg = await _ops(app, "needs_review", problems=["fabricated number"]).publish("t1")
+    assert not ok and "blocking" in msg
+
+    ok, _ = await _ops(app, "draft_ready").not_publish("t1")
+    assert ok
+    assert app.repo.named("set_status")[-1][0][1] == TaskStatus.NOT_PUBLISHED
+
