@@ -79,6 +79,7 @@
     "storage_budget": "R2 storage budget reached; image unavailable.",
     "images_review": "{count} image(s) need review (see image decisions).",
     "jev_review": "Jev flagged for human review: {reason}",
+    "evaluation_review": "Evaluation flagged for review: {reason}",
     "jev_disabled": "Jev disabled; main LLM decides.",
     "jev_unconfigured": "Jev not configured; main LLM decides.",
     "jev_no_text": "No usable text for Jev; vision + LLM decide.",

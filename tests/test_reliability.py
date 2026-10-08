@@ -406,3 +406,78 @@ async def test_publish_and_not_publish_lifecycle(app):
     assert ok
     assert app.repo.named("set_status")[-1][0][1] == TaskStatus.NOT_PUBLISHED
 
+
+# --------------------------------------------------------------------------- 9. operator skip bypass
+
+
+async def test_unsuitable_evaluation_does_not_skip_operator_direct_or_media_task(app):
+    p = Pipeline(app)
+    env = envelope(is_direct=True, media=[SourceMedia(message_id=1, kind=MediaKind.PHOTO)])
+    eval_bad = Evaluation(suitable=False, value_score=0.1, reason="Screenshots contain unverified claims.")
+    p._evaluate = lambda *a, **k: asyncio.sleep(0, result=eval_bad)
+    p._analyze = lambda *a, **k: asyncio.sleep(0, result={})
+    p._rewrite = lambda *a, **k: asyncio.sleep(0, result=(RewriteResult(post="Draft text", hook="Hook"), SimpleNamespace(problems=[], review=[], warnings=[])))
+    p._process_images = lambda *a, **k: asyncio.sleep(0, result=[])
+    p._persist = lambda *a, **k: asyncio.sleep(0, result=[])
+    from tg_x_copilot.models import TriageResult
+    triage = TriageResult(route="proceed", value=0.8)
+    await p._run_editorial("t1", env, app.i18n.get("en-US"), app.config.current, triage, [], [], 0.0)
+    saved = app.repo.named("save_draft")[-1][0]
+    assert saved[1] == TaskStatus.DRAFT_READY
+    assert saved[2] == "Draft text"
+    meta = saved[3]
+    assert "Screenshots contain unverified claims." in meta["warnings"]
+
+
+async def test_unsuitable_evaluation_adds_review_flag_for_forwarded_operator_task(app):
+    p = Pipeline(app)
+    env = envelope(is_direct=False, media=[SourceMedia(message_id=1, kind=MediaKind.PHOTO)])
+    eval_bad = Evaluation(suitable=False, value_score=0.1, reason="Screenshots contain unverified claims.")
+    p._evaluate = lambda *a, **k: asyncio.sleep(0, result=eval_bad)
+    p._analyze = lambda *a, **k: asyncio.sleep(0, result={})
+    p._rewrite = lambda *a, **k: asyncio.sleep(0, result=(RewriteResult(post="Draft text", hook="Hook"), SimpleNamespace(problems=[], review=[], warnings=[])))
+    p._process_images = lambda *a, **k: asyncio.sleep(0, result=[])
+    p._persist = lambda *a, **k: asyncio.sleep(0, result=[])
+    from tg_x_copilot.models import TriageResult
+    triage = TriageResult(route="proceed", value=0.8)
+    await p._run_editorial("t2", env, app.i18n.get("en-US"), app.config.current, triage, [], [], 0.0)
+    saved = app.repo.named("save_draft")[-1][0]
+    assert saved[1] == TaskStatus.NEEDS_REVIEW
+    meta = saved[3]
+    assert any("Screenshots contain unverified claims." in r for r in meta["review"])
+
+
+async def test_vision_analysis_with_english_source_facts_does_not_fail_localization(app):
+    p = Pipeline(app)
+    env = envelope(is_direct=True, locale="zh-CN")
+    analysis = ImageAnalysis(
+        description="这是一张科技产品发布截图。",
+        layout_description="顶部为导航栏，主体为基准测试数据表格。",
+        image_type="ui_screenshot",
+        depicts_real_people=False,
+        has_third_party_watermark=False,
+        has_channel_overlay=False,
+        has_source_copyright_mark=False,
+        mark_regions=[],
+        source_facts=["Claude Haiku 5.5 input token pricing is $0.1 per million tokens.", "Sonnet 5.5 cache read is $0.1."],
+        contains_text=True,
+        extracted_text="Haiku 5.5 $0.1",
+        quality="ok",
+        relevance=1.0,
+        sensitive=False,
+        reason="图表清晰可读，数据完整。",
+    )
+    def chat_mock(model, messages, schema, **kwargs):
+        from tg_x_copilot.pipeline.language import LanguageCheck
+        if schema is ImageAnalysis:
+            return analysis
+        if schema is LanguageCheck:
+            return LanguageCheck(passed=True)
+        raise AssertionError(schema)
+    app.hub.cpa.returns["chat_json"] = chat_mock
+    img = LoadedImage(0, inspect_image(png_bytes()), SourceMedia(message_id=1, kind=MediaKind.PHOTO))
+    res = await p._analyze("t3", env, [img], app.i18n.get("zh-CN"), app.config.current)
+    assert 0 in res
+    assert res[0].description == "这是一张科技产品发布截图。"
+
+

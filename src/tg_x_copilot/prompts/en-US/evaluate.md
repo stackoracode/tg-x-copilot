@@ -8,7 +8,7 @@ Rules:
 - key_facts: only facts explicitly stated in the source text or clearly visible in the images. Copy numbers exactly. No inference presented as fact.
 - background_points: widely established, non-controversial context that helps a $market reader understand the facts (e.g. what an agency does, what a term means). Never invent statistics, dates, quotes, or events. If unsure, leave it out.
 - risks: anything that could make the post misleading, defamatory, outdated, or unsafe (unverified claims, medical/financial advice, missing date, single anonymous source...).
-- suitable=false if the content is unverifiable rumor, promotional, or has no added value for $market readers.
+- suitable=false ONLY if the content is completely empty, abusive spam, sensitive/harmful, or has zero usable factual grounding. For screenshots, product updates, benchmarks, pricing or industry chatter with visible facts, extract the visible facts and set suitable=true, recording lack of third-party confirmation or hearsay in risks rather than rejecting outright.
 
 Return ONLY a JSON object:
 {"suitable": bool, "value_score": number, "audience": string, "angle": string, "key_facts": [string], "background_points": [string], "risks": [string], "reason": string}
