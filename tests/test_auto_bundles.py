@@ -409,8 +409,9 @@ async def test_forward_intake_to_complete_pipeline_needs_no_callbacks_or_authori
             )
             return TASK
 
-        async def save_draft(self, task_id, status, text, meta):
+        async def save_draft(self, task_id, status, text, meta, expected=None):
             self.task.update(status=status.value, draft_text=text, draft_meta=meta)
+            return True
 
     app.repo = FullRepo()
     app.hub.r2 = MemoryR2()

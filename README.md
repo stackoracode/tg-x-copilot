@@ -371,11 +371,14 @@ this change does not rename provider model IDs or alter production configuration
 | Image2 output fails visual QC | → REVIEW; can be kept as a review copy if enabled |
 | LLM adds background facts | Draft → `needs_review`; a human must check them before approving |
 | Two workers or processes pick the same task | Atomic MySQL claim (`UPDATE … WHERE status='received'`): only one runs it |
+| Two devices act on one task at once (e.g. Telegram + web) | Operator actions and pipeline results are compare-and-set (`… AND status IN (…)`); the loser gets "task changed, refresh" and a stale run can never resurrect a rejected task |
 | Worker cancelled (shutdown) | Its claim is released and the task returns to `received` |
 | Process crashes mid-task | Its claim expires after `task_timeout + 120s`; the sweeper requeues the task |
 | PyMySQL thread safety | One connection per operation, created, used, and closed in one worker thread |
 
 ## Security notes
+
+- **CSRF:** every state-changing admin request must come from the same origin (`Origin`/`Referer` = request host, or `ADMIN__TRUSTED_ORIGINS`). Cross-site form posts are refused with 403 even though the browser would re-send Basic credentials.
 
 - Only `TELEGRAM__ALLOWED_USER_IDS` can use the bot. An empty list means nobody can.
 - The admin UI uses HTTP Basic auth and should be reached only over localhost or a tunnel.

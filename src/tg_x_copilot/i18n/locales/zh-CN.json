@@ -388,6 +388,7 @@
     "task_progress_delivery": "📤 任务 {task_id}：正在发送发布内容包",
     "image_tools_authorized_media": "我转发的素材已获编辑授权",
     "guard_publish_style": "直接进入主题，删除模板化来源开头和核实、兼容性、安装或测试尾注；必要的来源与不确定性写入正文。",
-    "task_delivery_failed": "⛔ 任务 {task_id}：[TELEGRAM_SEND] 发布内容发送失败，请稍后重试。"
+    "task_delivery_failed": "⛔ 任务 {task_id}：[TELEGRAM_SEND] 发布内容发送失败，请稍后重试。",
+    "task_changed": "任务已被其他操作更改（当前：{status}）。请刷新后重试。"
   }
 }

@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from ..config import EDITABLE_KEYS, get_path
 from ..i18n import label
+from .security import require_same_origin
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["tojson"] = lambda val, indent=None: Markup(
@@ -47,7 +48,8 @@ def require_admin(request: Request, creds: HTTPBasicCredentials | None = Depends
     return creds.username
 
 
-router = APIRouter(dependencies=[Depends(require_admin)])
+# CSRF check first: a cross-site request is refused even before credentials are checked.
+router = APIRouter(dependencies=[Depends(require_same_origin), Depends(require_admin)])
 
 
 def _render(request: Request, name: str, **data: Any) -> HTMLResponse:
@@ -214,7 +216,7 @@ async def health(request: Request) -> HTMLResponse:
 @router.get("/api/tasks")
 async def api_tasks(request: Request, status_filter: str | None = None,
                     limit: int = 50) -> JSONResponse:
-    rows = await _ctx(request).repo.list_tasks(limit=min(limit, 500), status=status_filter)
+    rows = await _ctx(request).repo.list_tasks(limit=max(1, min(limit, 500)), status=status_filter)
     return JSONResponse(jsonable(rows))
 
 

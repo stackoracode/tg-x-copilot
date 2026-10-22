@@ -156,6 +156,9 @@ class AdminSettings(BaseModel):
     port: int = 8080
     username: str = "admin"
     password: SecretStr = SecretStr("")
+    # Extra origins allowed to POST (CSRF check), e.g. ["https://copilot.example.com"] when a
+    # reverse proxy rewrites the Host header. Same-host requests are always allowed.
+    trusted_origins: list[str] = Field(default_factory=list)
 
 
 class AppSettings(BaseSettings):

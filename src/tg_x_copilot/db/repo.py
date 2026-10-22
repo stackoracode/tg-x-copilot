@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from ..models import InputEnvelope, TaskStatus, ImageEditAuthorization
@@ -20,6 +21,17 @@ def _dumps(v: Any) -> str | None:
     if hasattr(v, "model_dump"):
         v = v.model_dump(mode="json")
     return json.dumps(v, ensure_ascii=False, default=str)
+
+
+def _expect(sql: str, args: list[Any], expected: Iterable[TaskStatus] | None
+            ) -> tuple[str, list[Any]]:
+    """Append a compare-and-set status condition to an UPDATE ... WHERE id=%s statement."""
+    if expected is None:
+        return sql, args
+    states = [TaskStatus(s).value for s in expected]
+    if not states:
+        raise ValueError("expected must not be empty")
+    return sql + f" AND status IN ({','.join(['%s'] * len(states))})", [*args, *states]
 
 
 def _decode(row: dict[str, Any] | None, cols: tuple[str, ...]) -> dict[str, Any] | None:
@@ -98,12 +110,15 @@ class Repository:
 
     async def set_status(
         self, task_id: str, status: TaskStatus, *, stage: str | None = None,
-        error: str | None = None,
-    ) -> None:
-        await self.db.execute(
-            "UPDATE tasks SET status=%s, stage=%s, error=%s WHERE id=%s",
-            (status.value, stage, error, task_id),
-        )
+        error: str | None = None, expected: Iterable[TaskStatus] | None = None,
+    ) -> bool:
+        """Set the status. With `expected`, this is a compare-and-set: the row only changes if
+        its current status is one of `expected` (returns False otherwise), so a stale read can
+        never overwrite a newer decision made by another device, worker or process."""
+        sql = "UPDATE tasks SET status=%s, stage=%s, error=%s WHERE id=%s"
+        args: list[Any] = [status.value, stage, error, task_id]
+        sql, args = _expect(sql, args, expected)
+        return await self.db.execute(sql, args) == 1
 
     async def set_stage(self, task_id: str, stage: str) -> None:
         await self.db.execute("UPDATE tasks SET stage=%s WHERE id=%s", (stage, task_id))
@@ -120,6 +135,17 @@ class Repository:
             (TaskStatus.PROCESSING.value, owner, task_id, TaskStatus.RECEIVED.value),
         )
         return n == 1
+
+    async def reserve_task(self, task_id: str, owner: str,
+                           expected: Iterable[TaskStatus]) -> bool:
+        """Compare-and-set any `expected` status to PROCESSING owned by `owner` (no attempt
+        counted). Used by operator actions that must mutate a task before re-queuing it, so no
+        worker can claim it half-prepared. Hand it back with `release_claim`; a crash in between
+        is covered by the stale-claim lease like any worker claim."""
+        sql = ("UPDATE tasks SET status=%s, claimed_by=%s, claimed_at=CURRENT_TIMESTAMP(3)"
+               " WHERE id=%s")
+        sql, args = _expect(sql, [TaskStatus.PROCESSING.value, owner, task_id], expected)
+        return await self.db.execute(sql, args) == 1
 
     async def release_claim(self, task_id: str, owner: str) -> bool:
         """Hand an interrupted task back to the queue (graceful shutdown)."""
@@ -150,15 +176,16 @@ class Repository:
         )
 
     async def save_draft(
-        self, task_id: str, status: TaskStatus, draft_text: str, draft_meta: dict[str, Any]
-    ) -> None:
-        await self.db.execute(
-            "UPDATE tasks SET status=%s, stage='done', draft_text=%s, draft_meta=%s, error=NULL"
-            " WHERE id=%s",
-            (status.value, draft_text, _dumps(draft_meta), task_id),
-        )
-
-    # ------------------------------------------------------------------ media
+        self, task_id: str, status: TaskStatus, draft_text: str, draft_meta: dict[str, Any],
+        *, expected: Iterable[TaskStatus] | None = None,
+    ) -> bool:
+        """Pipeline result write. Pass expected=(PROCESSING,) so a run whose task was rejected
+        or re-queued meanwhile cannot resurrect it."""
+        sql = ("UPDATE tasks SET status=%s, stage='done', draft_text=%s, draft_meta=%s, error=NULL"
+               " WHERE id=%s")
+        args: list[Any] = [status.value, draft_text, _dumps(draft_meta), task_id]
+        sql, args = _expect(sql, args, expected)
+        return await self.db.execute(sql, args) == 1
 
     async def upsert_media(
         self, task_id: str, idx: int, *, message_id: int, kind: str, mime: str | None,

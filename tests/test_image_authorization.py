@@ -48,8 +48,9 @@ class AuthorizationRepo(MediaRepo):
     async def clear_media_asset(self, task_id, idx):
         self.media[idx].update(asset_key=None, asset_kind=None)
 
-    async def save_draft(self, task_id, status, text, meta):
+    async def save_draft(self, task_id, status, text, meta, expected=None):
         self.task.update(status=status.value, draft_text=text, draft_meta=meta)
+        return True
 
     async def authorize_image_edit(self, task_id, user_id, chat_id, authorization, reason):
         if self.task["status"] not in ("draft_ready", "needs_review"):
