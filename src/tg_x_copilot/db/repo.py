@@ -49,8 +49,10 @@ class Repository:
 
     # ------------------------------------------------------------------ tasks
 
-    async def create_task(self, env: InputEnvelope) -> str:
-        task_id = uuid.uuid4().hex
+    async def create_task(self, env: InputEnvelope, *, task_id: str | None = None) -> str:
+        # A caller-chosen id lets the web channel stage uploads before the task row exists, so
+        # no worker can ever claim a task whose media is not on disk yet.
+        task_id = task_id or uuid.uuid4().hex
         await self.db.execute(
             "INSERT INTO tasks (id, status, locale, market, tg_chat_id, tg_user_id, envelope,"
             " source_text) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",

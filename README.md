@@ -3,7 +3,9 @@
 A copilot that turns content forwarded from Telegram into **original, useful X posts in
 English or Simplified Chinese for the configured market**.
 
-You forward posts to the bot: text, photos, captions, albums, or several posts at once.
+You forward posts to the bot — **or use the web app from any browser, phone included, without
+Telegram** (see [Web app](#web-app-no-telegram-needed)): paste text, add links or upload/paste
+screenshots, and get the draft, images and all review tools on the page.
 
 0. **Clean the content**: a small deterministic prefilter removes obvious promotion and tracking; an LLM extracts each message's factual core, then combines the results. Forward attribution is audit/rights metadata and never publishing content.
 1. **Jev** ([TypeSafe AI System One](https://docs.typesafe.ai/api)) triages the post with
@@ -159,9 +161,55 @@ rejects `/images/edits`, set `MODELS__IMAGE_EDIT_MODE=generations_with_refs`.
 python -m tg_x_copilot        # or: tg-x-copilot
 ```
 
-The admin UI listens on `127.0.0.1:8080`. Open it through an SSH tunnel:
-`ssh -L 8080:127.0.0.1:8080 <vps>`. To run it as a service, see
-`deploy/tg-x-copilot.service`.
+The web app and admin UI listen on `127.0.0.1:8080`. Open them through an SSH tunnel
+(`ssh -L 8080:127.0.0.1:8080 <vps>`) or, for phones, behind HTTPS (see
+[Using it from your phone](#using-it-from-your-phone)). For web-only mode set
+`TELEGRAM__ENABLED=false`. To run it as a service, see `deploy/tg-x-copilot.service`.
+
+## Web app (no Telegram needed)
+
+The same server that hosts the admin UI is a complete, mobile-friendly client. It works with
+`TELEGRAM__ENABLED=false` (web-only mode) or next to the bot.
+
+**Create** — tap **＋ New** (`/new`):
+- **Text**: paste a post, article excerpt or your own notes.
+- **Links**: one or more URLs. With *Read the linked pages* the server fetches each public
+  page's readable text (SSRF-guarded: public http/https hosts only, redirects re-checked,
+  2 MB / 15 s caps) and uses it as source material, like a separate forwarded post.
+- **Images**: choose files, drop them, or **paste screenshots** straight from the clipboard;
+  on phones the picker offers camera and gallery. Up to `WEB__MAX_FILES` (10) images, each
+  validated as a real JPEG/PNG/WebP/GIF.
+- *This is my own original content* behaves like a direct Telegram message (processed without
+  source-review flags). Leave it unchecked for content copied from elsewhere.
+- *I hold the rights to edit these images* is the explicit editing-rights declaration (never
+  inferred). *Image settings* choose the action (automatic, keep, enhance, localize, recreate,
+  clean recreate, information card, generate, text only), image language, density and
+  options. Your last choices are remembered as the web profile.
+
+**Follow and finish** — the task page updates itself while the task is queued/processing, then
+shows the draft with **Copy text** and the character count, the final images (open / save),
+review items, and every action: approve, mark published / not published, regenerate, reject,
+**re-run images** with another action or options (text stays unchanged), and
+**confirm editing rights** for a single blocked image.
+
+**Where uploads live** — uploaded originals are staged on local disk in `WEB__INBOX_DIR`
+(`data/web_inbox/<task_id>/`), not in R2 or MySQL. They are re-used for regenerate and image
+re-runs, deleted when you publish / mark not published / reject, and purged after
+`WEB__INBOX_TTL_DAYS` (14) otherwise. Web drafts keep their final images in R2 until the task
+is published, not published or rejected (approval alone doesn't delete them, because the page
+is the only delivery copy).
+
+### Using it from your phone
+
+The UI binds to `127.0.0.1` by default. To reach it from a phone, put it behind **HTTPS** —
+for example a Cloudflare Tunnel (`cloudflared tunnel --url http://127.0.0.1:8080`) or a
+reverse proxy such as Caddy (`copilot.example.com { reverse_proxy 127.0.0.1:8080 }`). Then:
+
+- keep a strong `ADMIN__PASSWORD` (HTTP Basic auth protects every page and API);
+- if the proxy rewrites the `Host` header, add its public origin to
+  `ADMIN__TRUSTED_ORIGINS=["https://copilot.example.com"]` (CSRF same-origin check);
+- HTTPS also enables the one-tap clipboard copy (plain-HTTP pages fall back to a legacy copy).
+- *Add to Home Screen* gives an app-like shortcut on iOS/Android.
 
 ## Using the bot
 

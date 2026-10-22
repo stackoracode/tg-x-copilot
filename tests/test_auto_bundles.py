@@ -400,7 +400,7 @@ async def test_forward_intake_to_complete_pipeline_needs_no_callbacks_or_authori
             super().__init__(code)
             self.returns.update(get_rules={}, get_hooks=[], claim_task=True)
 
-        async def create_task(self, envelope):
+        async def create_task(self, envelope, task_id=None):
             self.task.update(
                 envelope=envelope.model_dump(mode="json"),
                 attempts=0,

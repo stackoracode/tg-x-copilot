@@ -77,9 +77,23 @@ class ImageEditAuthorization(BaseModel):
     confirmed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class InputEnvelope(BaseModel):
-    """Normalized representation of one or more forwarded Telegram messages."""
+# Web submissions have no Telegram chat/user. They share one operator identity (0), which also
+# owns the web image-preference profile. Telegram user ids are always positive.
+WEB_CHAT_ID = 0
+WEB_USER_ID = 0
 
+
+def is_web_task(task: dict | None) -> bool:
+    """True for tasks created from the web compose page (channel=web)."""
+    return bool(task) and (task.get("envelope") or {}).get("channel") == "web"
+
+
+class InputEnvelope(BaseModel):
+    """Normalized representation of one Telegram message/album, or one web submission."""
+
+    # Where the content came from and where media is re-read from. Default keeps every
+    # existing (Telegram) envelope valid unchanged.
+    channel: Literal["telegram", "web"] = "telegram"
     chat_id: int
     user_id: int
     message_ids: list[int]

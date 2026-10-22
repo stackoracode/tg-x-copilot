@@ -14,6 +14,7 @@ from ..i18n import label
 from ..models import TaskStatus, ImageEditAuthorization
 from ..pipeline.image_policy import needs_edit_confirmation
 from ..image_settings import ImagePreferences, resolve_workflow, has_image_source
+from ..models import is_web_task
 
 if TYPE_CHECKING:
     from ..app_context import AppContext
@@ -139,8 +140,12 @@ class Ops:
         ]
         results = list(await asyncio.gather(*checks))
         tg = self.app.telegram
-        results.append(CheckResult("telegram", bool(tg and tg.connected), 0,
-                                   "connected" if tg and tg.connected else "not connected"))
+        if not self.app.config.base.telegram.enabled:
+            # Web-only mode is a valid deployment, not a failure.
+            results.append(CheckResult("telegram", True, 0, "disabled (web-only mode)"))
+        else:
+            results.append(CheckResult("telegram", bool(tg and tg.connected), 0,
+                                       "connected" if tg and tg.connected else "not connected"))
         return results
 
     # ------------------------------------------------------------------ task actions
@@ -160,11 +165,22 @@ class Ops:
             return 0
 
     def _approved_release_kinds(self, task: dict[str, Any]) -> tuple[str, ...]:
-        # Final assets were already delivered to Telegram with the draft. Unless long-term
-        # retention is enabled, approving frees them from R2 as well as any review copies.
-        if self.app.config.current.storage.retain_approved_assets:
+        # Telegram finals were already delivered with the draft, so approval frees them unless
+        # long-term retention is enabled. Web tasks have no other delivery copy: their finals
+        # stay downloadable on the task page until publish / not publish / reject.
+        if self.app.config.current.storage.retain_approved_assets or is_web_task(task):
             return ("review",)
         return ("final", "review")
+
+    async def _task_closed(self, task_id: str) -> None:
+        """Terminal operator decision: staged web uploads are no longer needed."""
+        inbox = getattr(self.app, "web_inbox", None)
+        if inbox is None:
+            return
+        try:
+            await asyncio.to_thread(inbox.delete, task_id)
+        except Exception:
+            log.exception("deleting web uploads failed (non-fatal)")
 
     async def approve(self, task_id: str) -> tuple[bool, str]:
         task = await self.app.repo.get_task(task_id)
@@ -203,6 +219,7 @@ class Ops:
         retain = self.app.config.current.storage.retain_approved_assets
         kinds = ("review",) if retain else ("final", "review")
         freed = await self._release(task_id, kinds, "publish")
+        await self._task_closed(task_id)
         await self.app.repo.add_event(
             task_id, "publish",
             f"published by operator (from {status}); "
@@ -219,6 +236,7 @@ class Ops:
                                               expected=(TaskStatus(task["status"]),)):
             return await self._changed(task_id)
         freed = await self._release(task_id, ("final", "review"), "not_publish")
+        await self._task_closed(task_id)
         await self.app.repo.add_event(task_id, "not_publish",
                                       f"marked not published by operator; {freed} R2 object(s) deleted")
         return True, self.t("ops_not_published")
@@ -233,6 +251,7 @@ class Ops:
                                               expected=(TaskStatus(task["status"]),)):
             return await self._changed(task_id)
         freed = await self._release(task_id, ("final", "review"), "reject")
+        await self._task_closed(task_id)
         await self.app.repo.add_event(task_id, "reject",
                                       f"rejected by operator; {freed} R2 object(s) deleted")
         return True, self.t("ops_rejected")
@@ -252,7 +271,7 @@ class Ops:
         if not await self.app.repo.reserve_task(task_id, owner, expected=(TaskStatus(task["status"]),)):
             return await self._changed(task_id)
         try:
-            await self.app.storage.release_task(task_id)  # media is re-fetched from its source
+            await self.app.storage.release_task(task_id)  # media is re-read from Telegram / web inbox
             if hasattr(self.app, "image_preferences") and task.get("tg_user_id") is not None:
                 prefs = await self.app.image_preferences.get(task["tg_user_id"])
                 prefs = resolve_workflow(prefs, has_images=has_image_source((task.get("envelope") or {}).get("media") or []))

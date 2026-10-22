@@ -1,0 +1,33 @@
+{# Shared image-intent controls. Expects: actions, options, densities, locales, opts (ImageOptions), prefs #}
+<div class="field">
+  <label for="image_action">{{ t('web_image_action') }}</label>
+  <select id="image_action" name="image_action">
+    <option value="" {% if not prefs.image_action %}selected{% endif %}>{{ t('web_image_action_auto') }}</option>
+    {% for a in actions %}
+    <option value="{{ a }}" {% if prefs.image_action == a %}selected{% endif %}>{{ t('image_action_' ~ a) }}</option>
+    {% endfor %}
+  </select>
+  <span class="hint">{{ t('web_image_action_hint') }}</span>
+</div>
+<div class="row">
+  <div class="field" style="flex:1; min-width:140px">
+    <label for="target_locale">{{ t('web_image_language') }}</label>
+    <select id="target_locale" name="target_locale">
+      <option value="" {% if not opts.target_locale %}selected{% endif %}>{{ t('web_follow_task_language') }}</option>
+      {% for code in locales %}<option value="{{ code }}" {% if opts.target_locale == code %}selected{% endif %}>{{ code }}</option>{% endfor %}
+    </select>
+  </div>
+  <div class="field" style="flex:1; min-width:140px">
+    <label for="density">{{ t('web_density') }}</label>
+    <select id="density" name="density">
+      {% for d in densities %}<option value="{{ d }}" {% if opts.information_density == d %}selected{% endif %}>{{ t('density_' ~ d) }}</option>{% endfor %}
+    </select>
+  </div>
+</div>
+<label class="check"><input type="checkbox" name="custom_options" value="1">
+  <span>{{ t('web_custom_options') }}<br><span class="hint">{{ t('web_custom_options_hint') }}</span></span></label>
+<div class="row">
+  {% for o in options %}
+  <label class="check" style="margin:0 12px 0 0"><input type="checkbox" name="flag" value="{{ o }}" {% if o in opts.flags %}checked{% endif %}> {{ t('image_option_' ~ o) }}</label>
+  {% endfor %}
+</div>

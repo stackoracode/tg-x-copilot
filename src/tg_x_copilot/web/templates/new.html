@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}{{ t('web_new_title') }}{% endblock %}
+{% block content %}
+<form class="card" method="post" action="/new" enctype="multipart/form-data" id="compose">
+  <h2 style="margin-top:0">{{ t('web_new_title') }}</h2>
+  <p class="hint">{{ t('web_new_intro') }}</p>
+
+  <div class="field">
+    <label for="text">{{ t('web_text') }}</label>
+    <textarea id="text" name="text" placeholder="{{ t('web_text_placeholder') }}" autofocus></textarea>
+  </div>
+
+  <div class="field">
+    <label for="urls">{{ t('web_urls') }}</label>
+    <textarea id="urls" name="urls" rows="2" style="min-height:0" inputmode="url"
+              placeholder="https://…"></textarea>
+    {% if fetch_enabled %}
+    <label class="check"><input type="checkbox" name="fetch_pages" value="1" checked>
+      <span>{{ t('web_fetch_pages') }}<br><span class="hint">{{ t('web_fetch_pages_hint') }}</span></span></label>
+    {% endif %}
+  </div>
+
+  <div class="field">
+    <label for="images">{{ t('web_images') }}</label>
+    <div class="drop" id="drop">
+      <input type="file" id="images" name="images" accept="image/*" multiple>
+      <p class="hint">{{ t('web_images_hint', count=max_files, mb=max_mb) }}</p>
+      <div class="thumbs" id="thumbs"></div>
+    </div>
+  </div>
+
+  <div class="field">
+    <label class="check"><input type="checkbox" name="own_content" value="1">
+      <span>{{ t('web_own_content') }}<br><span class="hint">{{ t('web_own_content_hint') }}</span></span></label>
+    <label class="check"><input type="checkbox" name="rights" value="1" {% if prefs.authorized_media %}checked{% endif %}>
+      <span>{{ t('web_rights') }}<br><span class="hint">{{ t('web_rights_hint') }}</span></span></label>
+  </div>
+
+  {% set opts = prefs.image_options %}
+  <details class="field">
+    <summary><b>{{ t('web_image_settings') }}</b></summary>
+    {% include "_image_options.html" %}
+  </details>
+
+  <div class="row">
+    <button class="primary" type="submit" id="submit">{{ t('web_submit') }}</button>
+    <span class="hint" id="busy" hidden>{{ t('web_uploading') }}</span>
+  </div>
+</form>
+
+<script>
+(() => {
+  const input = document.getElementById('images');
+  const thumbs = document.getElementById('thumbs');
+  const drop = document.getElementById('drop');
+  const max = {{ max_files }};
+  let canSet = true;
+  try { new DataTransfer(); } catch (e) { canSet = false; }  // very old browsers: native picker only
+
+  function render() {
+    thumbs.innerHTML = '';
+    Array.from(input.files).forEach((f) => {
+      const img = document.createElement('img');
+      img.alt = f.name; img.src = URL.createObjectURL(f);
+      img.onload = () => URL.revokeObjectURL(img.src);
+      thumbs.appendChild(img);
+    });
+  }
+  function add(files) {
+    if (!canSet) return;
+    const dt = new DataTransfer();
+    Array.from(input.files).forEach((f) => dt.items.add(f));
+    Array.from(files).filter((f) => f.type.startsWith('image/'))
+      .slice(0, Math.max(0, max - dt.items.length)).forEach((f) => dt.items.add(f));
+    input.files = dt.files;
+    render();
+  }
+  input.addEventListener('change', render);
+  // Paste screenshots straight from the clipboard (desktop and most mobile keyboards).
+  document.addEventListener('paste', (e) => {
+    const files = Array.from(e.clipboardData ? e.clipboardData.files : []);
+    if (files.length) { e.preventDefault(); add(files); }
+  });
+  ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', (e) => add(e.dataTransfer.files));
+  document.getElementById('compose').addEventListener('submit', () => {
+    document.getElementById('submit').disabled = true;
+    document.getElementById('busy').hidden = false;
+  });
+})();
+</script>
+{% endblock %}

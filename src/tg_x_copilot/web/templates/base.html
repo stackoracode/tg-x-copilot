@@ -2,7 +2,9 @@
 <html lang="{{ locale }}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2563eb">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>{% block title %}tg-x-copilot{% endblock %}</title>
 <style>
   :root { --bg:#fafafa; --fg:#1b1b1f; --muted:#6b6b76; --line:#e3e3e8; --card:#fff; --accent:#2563eb;
@@ -35,11 +37,43 @@
   .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:12px; }
   .grid img { width:100%; border-radius:6px; border:1px solid var(--line); }
   .stats { display:flex; flex-wrap:wrap; gap:8px; }
+  header { flex-wrap:wrap; row-gap:8px; position:sticky; top:0; z-index:10; }
+  header a.new { background:var(--accent); color:#fff; padding:6px 12px; border-radius:6px; }
+  textarea, select, input[type=url], input[type=file] { font:inherit; width:100%; padding:8px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
+  textarea { min-height:160px; resize:vertical; }
+  label.check { display:flex; gap:8px; align-items:flex-start; margin:8px 0; }
+  label.check input { margin-top:3px; width:auto; }
+  .field { margin-bottom:14px; } .field > label { display:block; font-weight:600; margin-bottom:4px; }
+  .hint { color:var(--muted); font-size:12px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .drop { border:2px dashed var(--line); border-radius:8px; padding:16px; text-align:center; }
+  .drop.over { border-color:var(--accent); }
+  .thumbs { display:grid; grid-template-columns:repeat(auto-fill, minmax(84px, 1fr)); gap:8px; margin-top:8px; }
+  .thumbs img { width:100%; aspect-ratio:1; object-fit:cover; border-radius:6px; border:1px solid var(--line); }
+  .actions form { margin:0 4px 6px 0; }
+  .draft { font-family:inherit; font-size:15px; line-height:1.55; }
+  header select { width:auto; padding:4px 6px; }
+  header form label { display:inline-flex; gap:6px; align-items:center; }
+  .field > label.check { font-weight:400; display:flex; }
+  .progress { height:6px; background:var(--line); border-radius:999px; overflow:hidden; }
+  .progress > span { display:block; height:100%; width:40%; background:var(--accent); animation:slide 1.2s infinite ease-in-out; }
+  @keyframes slide { from { margin-left:-40%; } to { margin-left:100%; } }
+  @media (max-width: 640px) {
+    main { padding:16px 16px calc(16px + env(safe-area-inset-bottom)); }
+    header { padding:10px 16px; gap:12px; }
+    header .brand { width:100%; }
+    /* 16px inputs stop iOS from zooming on focus; bigger tap targets */
+    textarea, select, input, button { font-size:16px; }
+    button, header a.new { padding:10px 14px; }
+    th, td { padding:6px 4px; }
+    .hide-sm { display:none; }
+  }
 </style>
 </head>
 <body>
 <header>
   <span class="brand">tg-x-copilot</span>
+  <a class="new" href="/new">＋ {{ t('web_new') }}</a>
   <a href="/">{{ t('admin_Tasks') }}</a>
   <a href="/settings">{{ t('admin_Settings') }}</a>
   <a href="/actions/health">{{ t('admin_Health') }}</a>

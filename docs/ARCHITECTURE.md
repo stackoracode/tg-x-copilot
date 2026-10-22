@@ -38,12 +38,16 @@ behind `Ops.approve`.
 flowchart LR
   TG[Telegram user] -- forward / album --> BOT[Telethon bot]
   BOT -- one message or one album --> NORM[normalize → InputEnvelope]
+  WEBU[Browser / phone] -- text, links, images --> WEB["/new compose<br/>web_input + url_fetch"]
+  WEB -- uploads --> INBOX[(local web inbox<br/>data/web_inbox)]
+  WEB --> NORM
   NORM --> DB[(MySQL)]
   NORM --> Q[[asyncio.Queue&lt;task_id&gt;]]
   SWEEP[Sweeper / recovery] --> Q
   Q --> W[Workers 1..N]
   W -- sem: jev --> JEV[TypeSafe Jev<br/>POST /v1/systemone]
   W -- sem: io --> BOT
+  W -- web media --> INBOX
   W -- sem: vision/text/image --> CPA[CPA proxy<br/>OpenAI-compatible]
   W -- sem: io, drafts only --> R2[(R2 Standard<br/>assets/sha256)]
   W -- sem: db --> DB
@@ -56,6 +60,24 @@ flowchart LR
 
 Everything runs in **one process and one event loop**: uvicorn, the FastAPI lifespan, Telethon,
 the workers, and the sweeper. That gives one deploy unit, one log stream, and one shutdown path.
+
+## Channels
+
+Two intake channels end in the same `submit_envelope()` (preferences resolved, task row created,
+task id enqueued) and the same pipeline. `InputEnvelope.channel` records which one, and decides
+where original media is re-read from and where results are delivered.
+
+| | Telegram (`channel="telegram"`) | Web (`channel="web"`) |
+|---|---|---|
+| Intake | bot: one message or album (or an explicit auto-bundle) | `/new`: text + links (optionally fetched, SSRF-guarded) + uploads = one task |
+| Identity | Telegram chat/user | `chat_id=0`, `user_id=0` (web operator profile) |
+| Original media | re-downloaded from the chat on every run | staged on local disk `data/web_inbox/<task_id>/<idx>` before the task row exists |
+| Progress / delivery | status card + images with caption in the chat | task page polls `/api/tasks/<id>/status`; draft, copy button and images on the page |
+| Final images in R2 | released on approve (already delivered) unless retention is on | kept until publish / not published / reject (the page is the only copy) |
+| Source cleanup | nothing to clean (Telegram holds it) | inbox deleted on publish / not published / reject, purged after `WEB__INBOX_TTL_DAYS` |
+
+`TELEGRAM__ENABLED=false` runs web-only; the health check reports Telegram as *disabled*, not
+failed. The web channel is single-host by design (workers read the inbox from local disk).
 
 ## Data flow (one task)
 
@@ -334,6 +356,17 @@ at MVP volume. A thread-confined pool can replace it later behind the same async
   for old tasks; unknown source rights fail closed. No schema migration is required.
 - Image prompts always include `language_name`, so text rendered in images follows the
   configured language.
+
+## Operator actions and concurrency (#13)
+
+Operator actions and pipeline results are **compare-and-set**: `set_status`/`save_draft` take
+the expected current status (`… WHERE id=%s AND status IN (…)`) and report whether they won.
+Approve / publish / not-publish / reject only transition from the status the operator saw; a
+lost race returns "the task changed, refresh". Regenerate first *reserves* the task (an
+ops-owned claim) while it releases assets and re-applies preferences, then hands it back to
+the queue. Pipeline writes only land while the task is still `processing`, so a run that was
+overtaken by an operator decision discards its result and releases what it stored. All
+state-changing web requests pass a same-origin (`Origin`/`Referer`) CSRF check before auth.
 
 ## Reliability review changes
 

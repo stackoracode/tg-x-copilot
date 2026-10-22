@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from ..app_context import AppContext
 from ..config import AppSettings
 from .admin import router as admin_router
+from .compose import router as compose_router
 
 
 def create_app(settings: AppSettings | None = None) -> FastAPI:
@@ -26,13 +27,17 @@ def create_app(settings: AppSettings | None = None) -> FastAPI:
         finally:
             await ctx.stop()
 
-    app = FastAPI(title="tg-x-copilot admin", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="tg-x-copilot", lifespan=lifespan, docs_url=None, redoc_url=None)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, object]:
         ctx: AppContext = app.state.ctx
-        return {"ok": True, "workers": ctx.workers.stats,
-                "telegram": bool(ctx.telegram and ctx.telegram.connected)}
+        telegram = (bool(ctx.telegram and ctx.telegram.connected)
+                    if ctx.config.base.telegram.enabled else "disabled")
+        return {"ok": True, "workers": ctx.workers.stats, "telegram": telegram}
 
+    # Compose routes first: admin's catch-all POST /tasks/{id}/{action} would shadow
+    # POST /tasks/{id}/images otherwise.
+    app.include_router(compose_router)
     app.include_router(admin_router)
     return app

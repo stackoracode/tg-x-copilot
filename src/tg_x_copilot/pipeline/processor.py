@@ -418,11 +418,12 @@ class Pipeline:
             if (only_indices is None or idx in only_indices) and use and sm.kind in _IMAGE_KINDS and (sm.size or 0) <= max_bytes
         ]
         downloaded: dict[int, bytes] = {}
-        download_error = t(env.locale, "media_deleted")
-        if wanted and self.app.telegram:
+        download_error = t(env.locale, "media_web_missing" if env.channel == "web"
+                           else "media_deleted")
+        if wanted:
             try:
                 async with self.app.limits.io:
-                    downloaded = await self.app.telegram.fetch_media(env.chat_id, wanted)
+                    downloaded = await self._fetch_sources(task_id, env, wanted)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # media is never fatal: the text draft still goes out
@@ -470,6 +471,18 @@ class Pipeline:
         await self._event(task_id, "media",
                           f"{len(loaded)}/{len(env.media)} image(s) loaded in memory (not stored)")
         return loaded, warnings
+
+    async def _fetch_sources(self, task_id: str, env: InputEnvelope,
+                             message_ids: list[int]) -> dict[int, bytes]:
+        """Original media bytes by message id, from wherever the channel keeps them: the
+        Telegram chat (re-downloaded each run) or the local web inbox (ids are idx+1)."""
+        if env.channel == "web":
+            by_idx = await asyncio.to_thread(self.app.web_inbox.load, task_id,
+                                             [m - 1 for m in message_ids])
+            return {idx + 1: data for idx, data in by_idx.items()}
+        if self.app.telegram:
+            return await self.app.telegram.fetch_media(env.chat_id, message_ids)
+        return {}
 
     async def _analyze(self, task_id: str, env: InputEnvelope, images: list[LoadedImage],
                        locale: Locale, cfg: AppSettings) -> dict[int, ImageAnalysis]:

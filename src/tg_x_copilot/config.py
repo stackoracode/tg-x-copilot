@@ -151,6 +151,22 @@ class PipelineSettings(BaseModel):
     direct_uploads_owned: bool = False
 
 
+class WebSettings(BaseModel):
+    """Web compose channel (works with TELEGRAM__ENABLED=false)."""
+
+    enabled: bool = True
+    # Uploaded source images are staged on local disk (not R2, not MySQL) until the task is
+    # published / not published / rejected, or this many days have passed.
+    inbox_dir: str = "data/web_inbox"
+    inbox_ttl_days: int = 14
+    max_files: int = 10
+    # Fetch readable text for submitted URLs (SSRF-guarded: public http/https hosts only).
+    fetch_urls: bool = True
+    fetch_timeout_seconds: float = 15.0
+    fetch_max_bytes: int = 2 * 1024 * 1024
+    fetch_max_chars: int = 20000
+
+
 class AdminSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8080
@@ -181,6 +197,7 @@ class AppSettings(BaseSettings):
     db: DBSettings = Field(default_factory=DBSettings)
     concurrency: ConcurrencySettings = Field(default_factory=ConcurrencySettings)
     pipeline: PipelineSettings = Field(default_factory=PipelineSettings)
+    web: WebSettings = Field(default_factory=WebSettings)
     admin: AdminSettings = Field(default_factory=AdminSettings)
 
 
@@ -220,6 +237,9 @@ EDITABLE_KEYS: frozenset[str] = frozenset({
     "storage.graphic_max_side",
     "storage.jpeg_quality",
     "pipeline.max_rewrite_attempts",
+    "web.fetch_urls",
+    "web.inbox_ttl_days",
+    "web.max_files",
     "pipeline.max_post_chars",
     "pipeline.owned_source_ids",
     "pipeline.direct_uploads_owned",
