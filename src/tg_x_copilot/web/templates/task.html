@@ -6,16 +6,56 @@
   <p class="muted">{{ t('admin_stage') }} {{ a(task.stage or "-") }} · {{ t('admin_attempts') }} {{ task.attempts }} · {{ t('admin_score') }} {{ task.score }} · {{ t('admin_route') }} {{ label(task.route or "-") }} · {{ task.locale }}/{{ task.market }} · {{ t('admin_created') }} {{ task.created_at }}</p>
   {% if task.locale != locale %}<p class="muted">{{ t('admin_Locale mismatch') }}</p>{% endif %}
   {% if task.error %}<pre class="bad">{{ t("task_failure") }}</pre>{% endif %}
+  {% if live %}
+  <div class="progress" aria-hidden="true"><span></span></div>
+  <p class="hint" id="live">{{ t('web_processing_hint') }}</p>
+  <script>
+  (() => {
+    const known = {{ (task.status ~ '|' ~ (task.stage or '')) | tojson }};
+    async function poll() {
+      try {
+        const r = await fetch('/api/tasks/{{ task.id }}/status', {credentials: 'same-origin', cache: 'no-store'});
+        if (r.ok) {
+          const s = await r.json();
+          if (s.status + '|' + (s.stage || '') !== known) { location.replace(location.pathname); return; }
+        }
+      } catch (e) {}
+      setTimeout(poll, 3000);
+    }
+    setTimeout(poll, 3000);
+  })();
+  </script>
+  {% endif %}
+  <div class="row actions">
   <form class="inline" method="post" action="/tasks/{{ task.id }}/approve">{% set blocking = (task.draft_meta or {}).problems %}<button class="primary" {% if not (task.status == "draft_ready" or (task.status == "needs_review" and not blocking)) %}disabled{% endif %}>{% if task.status == "needs_review" %}{{ t('admin_Approve (reviewed)') }}{% else %}{{ t('admin_Approve') }}{% endif %}</button></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/publish">{% set blocking = (task.draft_meta or {}).problems %}<button class="primary" {% if task.status == "published" or ((task.status not in ["draft_ready", "needs_review", "approved"]) or (task.status == "needs_review" and blocking)) %}disabled{% endif %}>{{ t('admin_Mark published') }}</button></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/not_publish"><button {% if task.status in ["not_published", "published", "processing"] %}disabled{% endif %}>{{ t('admin_Not published') }}</button></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/regenerate"><button>{{ t('admin_Regenerate') }}</button></form>
   <form class="inline" method="post" action="/tasks/{{ task.id }}/reject"><button {% if task.status in ["approved", "processing", "published"] %}disabled{% endif %}>{{ t('admin_Reject') }}</button></form>
+  </div>
 </div>
 
 <div class="card">
   <h3 style="margin-top:0">{{ t('admin_Draft') }}</h3>
-  {% if task.draft_text %}<pre>{{ task.draft_text }}</pre>{% else %}<p class="muted">{{ t('admin_No draft.') }}</p>{% endif %}
+  {% if task.draft_text %}
+  <pre class="draft" id="draft">{{ task.draft_text }}</pre>
+  <div class="row" style="margin-top:8px">
+    <button type="button" class="primary" id="copy">{{ t('web_copy') }}</button>
+    <span class="hint">{{ (task.draft_meta or {}).x_length or task.draft_text|length }}/{{ max_chars }} {{ t('web_chars') }}</span>
+    <span class="hint" id="copied" hidden>{{ t('web_copied') }}</span>
+  </div>
+  <script>
+  document.getElementById('copy').addEventListener('click', async () => {
+    const text = document.getElementById('draft').innerText;
+    try { await navigator.clipboard.writeText(text); }
+    catch (e) {  // http:// (non-secure) pages: legacy fallback
+      const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta);
+      ta.select(); document.execCommand('copy'); ta.remove();
+    }
+    document.getElementById('copied').hidden = false;
+  });
+  </script>
+  {% else %}<p class="muted">{{ t('admin_No draft.') }}</p>{% endif %}
   {% set meta = task.draft_meta or {} %}
   {% if meta.problems %}<h4>{{ t('admin_Blocking problems') }}</h4><ul>{% for p in meta.problems %}<li class="bad">{{ p }}</li>{% endfor %}</ul>{% endif %}
   {% if meta.review %}<h4>{{ t('admin_Requires review before approval') }}</h4><ul>{% for p in meta.review %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
@@ -40,13 +80,32 @@
       <b>#{{ m.idx }}</b> <span class="pill">{{ label(m.decision or "-") }}</span> <span class="muted">{{ a(m.kind) }} {{ m.width or "" }}×{{ m.height or "" }}</span>
       {% if m.ai_generated %}<span class="pill">AI</span>{% endif %}
       {% if m.asset_url %}<div class="muted">{{ a(m.asset_kind) }} {{ t('admin_asset') }} · {{ ((m.asset_size or 0) / 1024) | round(1) }} KB · {{ m.asset_mime }}</div><a href="{{ m.asset_url }}" target="_blank" rel="noopener"><img src="{{ m.asset_url }}" alt="{{ a(m.asset_kind) }} {{ m.idx }}"></a>
-      {% else %}<div class="muted">{{ t('admin_not stored (source stays in Telegram)') }}</div>{% endif %}
+      <p><a href="{{ m.asset_url }}" target="_blank" rel="noopener">{{ t('web_open_image') }}</a></p>
+      {% else %}<div class="muted">{{ t('web_not_stored') if is_web else t('admin_not stored (source stays in Telegram)') }}</div>{% endif %}
       <p>{{ m.decision_reason or "" }}</p>
+      {% if m.needs_auth %}
+      <form method="post" action="/tasks/{{ task.id }}/authorize/{{ m.idx }}">
+        <button type="submit">{{ t('web_confirm_rights') }}</button>
+        <span class="hint">{{ t('web_confirm_rights_hint') }}</span>
+      </form>
+      {% endif %}
       {% if m.analysis %}<details><summary class="muted">{{ t('admin_analysis') }}</summary><pre>{{ m.analysis | tojson(indent=2) }}</pre></details>{% endif %}
     </div>
   {% endfor %}
   </div>
 </div>
+{% endif %}
+
+{% if can_edit_images %}
+{% set opts = prefs.image_options %}
+<form class="card" method="post" action="/tasks/{{ task.id }}/images">
+  <h3 style="margin-top:0">{{ t('web_image_tools') }}</h3>
+  <p class="hint">{{ t('web_image_tools_hint') }}</p>
+  {% include "_image_options.html" %}
+  <label class="check"><input type="checkbox" name="rights" value="1" {% if prefs.authorized_media %}checked{% endif %}>
+    <span>{{ t('web_rights') }}</span></label>
+  <button class="primary" type="submit">{{ t('web_rerun_images') }}</button>
+</form>
 {% endif %}
 
 <div class="card">

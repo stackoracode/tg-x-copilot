@@ -18,7 +18,7 @@ from telethon import Button, TelegramClient, events
 from telethon.errors import MessageNotModifiedError
 
 from ..i18n import label
-from ..models import MediaFailureStage, TaskStatus
+from ..models import MediaFailureStage, TaskStatus, is_web_task
 from ..pipeline.media import inspect_image
 from ..pipeline.media_errors import media_error_reason
 from ..pipeline.image_policy import needs_edit_confirmation
@@ -169,7 +169,7 @@ class TelegramBot:
         except Exception:
             log.exception("loading task for progress update failed", extra=ctx(task_id=task_id))
             return
-        if not task:
+        if not task or is_web_task(task):  # web tasks are followed on the task page
             return
         envelope = task.get("envelope") or {}
         status_id = envelope.get("status_message_id")
@@ -219,7 +219,7 @@ class TelegramBot:
     async def send_draft(self, task_id: str, *, only_indices: set[int] | None = None) -> None:
         app = self.app
         task = await app.repo.get_task(task_id)
-        if not task:
+        if not task or is_web_task(task):  # web drafts are delivered on the task page
             return
         def tr(key: str, **kw: Any) -> str:
             return app.i18n.t(task.get("locale", app.config.current.default_locale), key, **kw)

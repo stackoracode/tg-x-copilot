@@ -18,6 +18,10 @@ from pydantic import ValidationError
 from ..config import EDITABLE_KEYS, get_path
 from ..i18n import label
 from .security import require_same_origin
+from .forms import form_context
+from ..image_settings import ImagePreferences
+from ..models import is_web_task
+from ..pipeline.image_policy import needs_edit_confirmation
 
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["tojson"] = lambda val, indent=None: Markup(
@@ -85,6 +89,7 @@ async def dashboard(request: Request, status_filter: str | None = None) -> HTMLR
         workers=ctx.workers.stats,
         status_filter=status_filter,
         telegram=bool(ctx.telegram and ctx.telegram.connected),
+        telegram_enabled=ctx.config.base.telegram.enabled,
     )
 
 
@@ -100,8 +105,24 @@ async def task_detail(request: Request, task_id: str) -> HTMLResponse:
         key = m.get("asset_key")
         m["asset_url"] = (r2.public_url(key) or r2.presign_get(key)) if key and r2.configured \
             else None
+        m["needs_auth"] = needs_edit_confirmation(task, m)
+    envelope = task.get("envelope") or {}
+    # Image tools start from the task's own current intent.
+    try:
+        prefs = ImagePreferences(
+            authorized_media=bool(envelope.get("media_edit_rights_confirmed")),
+            image_action=envelope.get("image_action"),
+            image_options=envelope.get("image_options") or {})
+    except ValueError:
+        prefs = ImagePreferences()
     return _render(request, "task.html", task=task, media=media,
-                   events=await ctx.repo.list_events(task_id))
+                   events=await ctx.repo.list_events(task_id),
+                   is_web=is_web_task(task),
+                   live=task["status"] in ("received", "processing"),
+                   can_edit_images=task["status"] in ("draft_ready", "needs_review")
+                   and bool(task.get("draft_text")),
+                   max_chars=ctx.config.current.pipeline.max_post_chars,
+                   **form_context(ctx, prefs))
 
 
 @router.post("/tasks/{task_id}/{action}")

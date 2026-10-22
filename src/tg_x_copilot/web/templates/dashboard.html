@@ -10,23 +10,23 @@
   <p class="muted">
     {{ t('admin_Queue') }}: {{ workers.queued }} {{ t('admin_queued') }} · {{ t('admin_busy workers') }}: {{ workers.busy|length }}/{{ workers.workers }}
     · {{ t('admin_R2 assets') }}: {{ stored_mb }} MB / {{ budget_gb }} GB {{ t('admin_budget') }}
-    · Telegram: {% if telegram %}<span class="ok">{{ t('admin_connected') }}</span>{% else %}<span class="bad">{{ t('admin_disconnected') }}</span>{% endif %}
+    · Telegram: {% if not telegram_enabled %}<span class="muted">{{ t('web_telegram_disabled') }}</span>{% elif telegram %}<span class="ok">{{ t('admin_connected') }}</span>{% else %}<span class="bad">{{ t('admin_disconnected') }}</span>{% endif %}
   </p>
 </div>
 <div class="card">
   <table>
-    <tr><th>{{ t('admin_Task') }}</th><th>{{ t('admin_Status') }}</th><th>{{ t('admin_Stage') }}</th><th>{{ t('admin_Score') }}</th><th>{{ t('admin_Preview') }}</th><th>{{ t('admin_Updated') }}</th></tr>
+    <tr><th>{{ t('admin_Task') }}</th><th>{{ t('admin_Status') }}</th><th class="hide-sm">{{ t('admin_Stage') }}</th><th class="hide-sm">{{ t('admin_Score') }}</th><th>{{ t('admin_Preview') }}</th><th class="hide-sm">{{ t('admin_Updated') }}</th></tr>
     {% for row in tasks %}
     <tr>
       <td><a href="/tasks/{{ row.id }}"><code>{{ row.id[:8] }}</code></a></td>
       <td class="s-{{ row.status }}">{{ label(row.status) }}</td>
-      <td class="muted">{{ a(row.stage or "") }}</td>
-      <td>{{ row.score if row.score is not none else "" }}</td>
+      <td class="muted hide-sm">{{ a(row.stage or "") }}</td>
+      <td class="hide-sm">{{ row.score if row.score is not none else "" }}</td>
       <td>{{ row.preview or "" }}{% if row.error %}<div class="muted">{{ t("task_failure") }}</div>{% endif %}</td>
-      <td class="muted">{{ row.updated_at }}</td>
+      <td class="muted hide-sm">{{ row.updated_at }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="muted">{{ t('admin_No tasks yet. Forward something to the bot.') }}</td></tr>
+    <tr><td colspan="6" class="muted">{{ t('web_no_tasks') }} <a href="/new">{{ t('web_new') }}</a></td></tr>
     {% endfor %}
   </table>
 </div>
