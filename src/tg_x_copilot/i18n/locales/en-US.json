@@ -388,6 +388,7 @@
     "task_progress_delivery": "📤 Task {task_id}: sending the publishing bundle",
     "image_tools_authorized_media": "My forwarded media is authorized for editing",
     "guard_publish_style": "Lead with the subject. Remove source-preface openers and verification, compatibility, installation or testing footers; keep necessary attribution and uncertainty in the body.",
-    "task_delivery_failed": "⛔ Task {task_id}: [TELEGRAM_SEND] Publishing bundle delivery failed. Please retry later."
+    "task_delivery_failed": "⛔ Task {task_id}: [TELEGRAM_SEND] Publishing bundle delivery failed. Please retry later.",
+    "task_changed": "The task changed in the meantime (now: {status}). Refresh and try again."
   }
 }

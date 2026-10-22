@@ -279,10 +279,31 @@ class Pipeline:
             "x_length": x_length(rewrite.post),
             "elapsed_s": round(time.monotonic() - started, 1),
         }
-        await repo.save_draft(task_id, status, rewrite.post, meta)
+        if not await self._save_result(task_id, status, rewrite.post, meta):
+            return
         await self._event(task_id, "done", f"{status.value} in {meta['elapsed_s']}s",
                           data={"problems": problems, "review": review})
         await self._notify_draft(task_id)
+
+    async def _save_result(self, task_id: str, status: TaskStatus, draft_text: str,
+                           meta: dict[str, Any]) -> bool:
+        """Compare-and-set the run's result. If an operator rejected / re-queued the task while
+        this run was in flight, the result is discarded: assets it persisted are released and
+        nothing is delivered, so a stale run can never resurrect a closed task."""
+        if await self.app.repo.save_draft(task_id, status, draft_text, meta,
+                                          expected=(TaskStatus.PROCESSING,)):
+            return True
+        await self._event(task_id, "superseded",
+                          "result discarded: the task was changed while this run was in flight",
+                          level="warning")
+        try:
+            current = await self.app.repo.get_task(task_id)
+            if not current or current["status"] not in (TaskStatus.RECEIVED.value,
+                                                          TaskStatus.PROCESSING.value):
+                await self.app.storage.release_task(task_id)
+        except Exception:
+            log.exception("releasing superseded assets failed (non-fatal)")
+        return False
 
     async def mark_failed(self, task_id: str, exc: BaseException) -> None:
         error = mask(f"{type(exc).__name__}: {exc}")[:1000]
@@ -291,12 +312,18 @@ class Pipeline:
             if previous and (previous.get("envelope") or {}).get("processing_mode") == "images_only" and previous.get("draft_text"):
                 meta = dict(previous.get("draft_meta") or {})
                 meta["review"] = list(meta.get("review") or []) + [t(previous["locale"], "image_rerun_failed")]
-                await self.app.repo.save_draft(task_id, TaskStatus.NEEDS_REVIEW, previous["draft_text"], meta)
+                if not await self.app.repo.save_draft(task_id, TaskStatus.NEEDS_REVIEW,
+                                                      previous["draft_text"], meta,
+                                                      expected=(TaskStatus.PROCESSING,)):
+                    return
                 await self._event(task_id, "failed", error, level="error")
                 await self._notify_draft(task_id)
                 return
+            if not await self.app.repo.set_status(task_id, TaskStatus.FAILED, stage="failed",
+                                                  error=error, expected=(TaskStatus.PROCESSING,)):
+                log.info("failure not recorded: task was changed by an operator meanwhile")
+                return
             await self.app.storage.release_task(task_id)  # nothing persisted for failed tasks
-            await self.app.repo.set_status(task_id, TaskStatus.FAILED, stage="failed", error=error)
             await self._event(task_id, "failed", error, level="error")
             task = await self.app.repo.get_task(task_id)
             if task and self.app.telegram:
@@ -308,8 +335,11 @@ class Pipeline:
             log.exception("failed to record task failure")
 
     async def _skip(self, task_id: str, env: InputEnvelope, reason: str) -> None:
-        await self.app.repo.set_status(task_id, TaskStatus.SKIPPED, stage="skipped",
-                                       error=reason[:1000])
+        if not await self.app.repo.set_status(task_id, TaskStatus.SKIPPED, stage="skipped",
+                                              error=reason[:1000],
+                                              expected=(TaskStatus.PROCESSING,)):
+            log.info("skip not recorded: task was changed by an operator meanwhile")
+            return
         await self._event(task_id, "skipped", reason)
         if self.app.telegram:
             try:
@@ -877,7 +907,8 @@ class Pipeline:
                 text_review=text_review, warnings=list(meta.get("text_warnings", meta.get("warnings") or []))
                 + warnings + fact_warnings, media=merged_media)
             status = TaskStatus.NEEDS_REVIEW if review or meta.get("problems") else TaskStatus.DRAFT_READY
-            await self.app.repo.save_draft(task_id, status, task["draft_text"], meta)
+            if not await self._save_result(task_id, status, task["draft_text"], meta):
+                return
             await self._event(task_id, "images", "image-only job finished; draft unchanged")
             await self._notify_draft(task_id, only_indices=only_indices)
         finally:

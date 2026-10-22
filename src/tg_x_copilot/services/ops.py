@@ -145,6 +145,27 @@ class Ops:
 
     # ------------------------------------------------------------------ task actions
 
+    async def _changed(self, task_id: str) -> tuple[bool, str]:
+        """A compare-and-set lost: another device/worker changed the task first."""
+        task = await self.app.repo.get_task(task_id)
+        status = task["status"] if task else "-"
+        return False, self.t("task_changed",
+                             status=label(self.app.config.current.default_locale, status))
+
+    async def _release(self, task_id: str, kinds: tuple[str, ...], action: str) -> int:
+        try:
+            return await self.app.storage.release_task(task_id, kinds=kinds)
+        except Exception:
+            log.exception("releasing assets on %s failed (non-fatal)", action)
+            return 0
+
+    def _approved_release_kinds(self, task: dict[str, Any]) -> tuple[str, ...]:
+        # Final assets were already delivered to Telegram with the draft. Unless long-term
+        # retention is enabled, approving frees them from R2 as well as any review copies.
+        if self.app.config.current.storage.retain_approved_assets:
+            return ("review",)
+        return ("final", "review")
+
     async def approve(self, task_id: str) -> tuple[bool, str]:
         task = await self.app.repo.get_task(task_id)
         if not task:
@@ -155,20 +176,15 @@ class Ops:
             return False, self.t("blocking")
         if status not in (TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value):
             return False, self.t("cannot_approve", status=label(self.app.config.current.default_locale, status))
-        await self.app.repo.set_status(task_id, TaskStatus.APPROVED, stage="done")
-        # Final assets were already delivered to Telegram with the draft. Unless long-term
-        # retention is enabled, approving frees them from R2 as well as any review copies.
-        retain = self.app.config.current.storage.retain_approved_assets
-        kinds = ("review",) if retain else ("final", "review")
-        try:
-            freed = await self.app.storage.release_task(task_id, kinds=kinds)
-        except Exception:
-            log.exception("releasing assets on approve failed (non-fatal)")
-            freed = 0
+        if not await self.app.repo.set_status(task_id, TaskStatus.APPROVED, stage="done",
+                                              expected=(TaskStatus(status),)):
+            return await self._changed(task_id)
+        kinds = self._approved_release_kinds(task)
+        freed = await self._release(task_id, kinds, "approve")
         await self.app.repo.add_event(
             task_id, "approve",
             f"approved by operator ({'reviewed' if status == 'needs_review' else 'ready'}); "
-            f"{freed} R2 object(s) deleted; retain_approved_assets={retain}")
+            f"{freed} R2 object(s) deleted; released={','.join(kinds)}")
         return True, self.t("ops_approved")
 
     async def publish(self, task_id: str) -> tuple[bool, str]:
@@ -181,14 +197,12 @@ class Ops:
             return False, self.t("blocking")
         if status not in (TaskStatus.DRAFT_READY.value, TaskStatus.NEEDS_REVIEW.value, TaskStatus.APPROVED.value):
             return False, self.t("cannot_publish", status=label(self.app.config.current.default_locale, status))
-        await self.app.repo.set_status(task_id, TaskStatus.PUBLISHED, stage="done")
+        if not await self.app.repo.set_status(task_id, TaskStatus.PUBLISHED, stage="done",
+                                              expected=(TaskStatus(status),)):
+            return await self._changed(task_id)
         retain = self.app.config.current.storage.retain_approved_assets
         kinds = ("review",) if retain else ("final", "review")
-        try:
-            freed = await self.app.storage.release_task(task_id, kinds=kinds)
-        except Exception:
-            log.exception("releasing assets on publish failed (non-fatal)")
-            freed = 0
+        freed = await self._release(task_id, kinds, "publish")
         await self.app.repo.add_event(
             task_id, "publish",
             f"published by operator (from {status}); "
@@ -201,8 +215,10 @@ class Ops:
             return False, self.t("not_found")
         if task["status"] in (TaskStatus.PUBLISHED.value, TaskStatus.PROCESSING.value):
             return False, self.t("cannot_not_publish", status=label(self.app.config.current.default_locale, task["status"]))
-        await self.app.repo.set_status(task_id, TaskStatus.NOT_PUBLISHED, stage="done")
-        freed = await self.app.storage.release_task(task_id)
+        if not await self.app.repo.set_status(task_id, TaskStatus.NOT_PUBLISHED, stage="done",
+                                              expected=(TaskStatus(task["status"]),)):
+            return await self._changed(task_id)
+        freed = await self._release(task_id, ("final", "review"), "not_publish")
         await self.app.repo.add_event(task_id, "not_publish",
                                       f"marked not published by operator; {freed} R2 object(s) deleted")
         return True, self.t("ops_not_published")
@@ -213,8 +229,10 @@ class Ops:
             return False, self.t("not_found")
         if task["status"] in (TaskStatus.APPROVED.value, TaskStatus.PROCESSING.value, TaskStatus.PUBLISHED.value):
             return False, self.t("cannot_reject", status=label(self.app.config.current.default_locale, task["status"]))
-        await self.app.repo.set_status(task_id, TaskStatus.REJECTED, stage="done")
-        freed = await self.app.storage.release_task(task_id)
+        if not await self.app.repo.set_status(task_id, TaskStatus.REJECTED, stage="done",
+                                              expected=(TaskStatus(task["status"]),)):
+            return await self._changed(task_id)
+        freed = await self._release(task_id, ("final", "review"), "reject")
         await self.app.repo.add_event(task_id, "reject",
                                       f"rejected by operator; {freed} R2 object(s) deleted")
         return True, self.t("ops_rejected")
@@ -228,14 +246,21 @@ class Ops:
                    TaskStatus.PUBLISHED, TaskStatus.NOT_PUBLISHED}
         if TaskStatus(task["status"]) not in allowed:
             return False, self.t("cannot_regenerate", status=label(self.app.config.current.default_locale, task["status"]))
-        await self.app.storage.release_task(task_id)  # media is re-fetched from Telegram
-        if hasattr(self.app, "image_preferences") and task.get("tg_user_id") is not None:
-            prefs = await self.app.image_preferences.get(task["tg_user_id"])
-            prefs = resolve_workflow(prefs, has_images=has_image_source((task.get("envelope") or {}).get("media") or []))
-            await self.app.repo.set_task_image_preferences(task_id, prefs)
-        await self.app.repo.set_task_locale(task_id, self.app.config.current.default_locale,
-                                            self.app.config.current.market)
-        await self.app.repo.set_status(task_id, TaskStatus.RECEIVED, stage="queued")
+        # Reserve the task first so no worker can claim it while it is being reset; a
+        # concurrent action that changed the status wins and this request reports it.
+        owner = f"ops:{getattr(self.app, 'instance_id', 'local')}"
+        if not await self.app.repo.reserve_task(task_id, owner, expected=(TaskStatus(task["status"]),)):
+            return await self._changed(task_id)
+        try:
+            await self.app.storage.release_task(task_id)  # media is re-fetched from its source
+            if hasattr(self.app, "image_preferences") and task.get("tg_user_id") is not None:
+                prefs = await self.app.image_preferences.get(task["tg_user_id"])
+                prefs = resolve_workflow(prefs, has_images=has_image_source((task.get("envelope") or {}).get("media") or []))
+                await self.app.repo.set_task_image_preferences(task_id, prefs)
+            await self.app.repo.set_task_locale(task_id, self.app.config.current.default_locale,
+                                                self.app.config.current.market)
+        finally:
+            await self.app.repo.release_claim(task_id, owner)  # -> received
         await self.app.repo.add_event(task_id, "regenerate", "re-queued by operator")
         if not await self.app.workers.enqueue(task_id, wait=False):
             return True, self.t("ops_busy")

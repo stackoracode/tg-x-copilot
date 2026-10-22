@@ -21,6 +21,9 @@ class Recorder:
     def __init__(self, **returns: Any) -> None:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
         self.returns = {"previous_uses": [], "list_media": [],
+                        # compare-and-set writes succeed unless a test says otherwise
+                        "save_draft": True, "set_status": True, "reserve_task": True,
+                        "release_claim": True,
                         "send_file": lambda chat, files, **kw: (
                             [SimpleNamespace(photo=object(), id=idx+1) for idx, _ in enumerate(files)]
                             if isinstance(files, list) else SimpleNamespace(photo=object(), id=1)),
