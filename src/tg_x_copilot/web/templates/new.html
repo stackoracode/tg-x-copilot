@@ -1,13 +1,35 @@
 {% extends "base.html" %}
 {% block title %}{{ t('web_new_title') }}{% endblock %}
 {% block content %}
-<form class="card" method="post" action="/new" enctype="multipart/form-data" id="compose">
+<style>
+  .modes { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+  .modes label { display:flex; gap:8px; align-items:flex-start; border:1px solid var(--line); border-radius:8px; padding:10px; cursor:pointer; }
+  .modes label:has(input:checked) { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
+  #compose.quick [data-only="standard"], #compose:not(.quick) [data-only="quick"] { display:none; }
+  .links-out > div { border-top:1px solid var(--line); padding:6px 0; }
+  .links-out .excerpt { white-space:pre-wrap; word-break:break-word; color:var(--muted); font-size:12px; max-height:6.5em; overflow:hidden; }
+  @media (max-width: 640px) { .modes { grid-template-columns:1fr; } }
+</style>
+<form class="card{% if quick_mode %} quick{% endif %}" method="post" action="/new" enctype="multipart/form-data" id="compose">
   <h2 style="margin-top:0">{{ t('web_new_title') }}</h2>
   <p class="hint">{{ t('web_new_intro') }}</p>
+
+  <div class="modes" role="radiogroup" aria-label="{{ t('web_mode') }}">
+    <label><input type="radio" name="mode" value="quick" {% if quick_mode %}checked{% endif %}>
+      <span><b>⚡ {{ t('web_mode_quick') }}</b><br><span class="hint">{{ t('web_mode_quick_hint') }}</span></span></label>
+    <label><input type="radio" name="mode" value="standard" {% if not quick_mode %}checked{% endif %}>
+      <span><b>{{ t('web_mode_standard') }}</b><br><span class="hint">{{ t('web_mode_standard_hint') }}</span></span></label>
+  </div>
 
   <div class="field">
     <label for="text">{{ t('web_text') }}</label>
     <textarea id="text" name="text" placeholder="{{ t('web_text_placeholder') }}" autofocus></textarea>
+  </div>
+
+  <div class="field" data-only="quick">
+    <label for="instructions">{{ t('web_instructions') }}</label>
+    <textarea id="instructions" name="instructions" rows="2" style="min-height:0"
+              placeholder="{{ t('web_instructions_placeholder') }}"></textarea>
   </div>
 
   <div class="field">
@@ -17,6 +39,13 @@
     {% if fetch_enabled %}
     <label class="check"><input type="checkbox" name="fetch_pages" value="1" checked>
       <span>{{ t('web_fetch_pages') }}<br><span class="hint">{{ t('web_fetch_pages_hint') }}</span></span></label>
+    {% if fetch_ai_available %}
+    <label class="check"><input type="checkbox" name="fetch_ai" value="1" id="fetch_ai" checked>
+      <span>{{ t('web_fetch_ai') }}<br><span class="hint">{{ t('web_fetch_ai_hint') }}</span></span></label>
+    {% endif %}
+    <div class="row"><button type="button" id="test-links">{{ t('web_test_links') }}</button>
+      <span class="hint" id="links-busy" hidden>{{ t('web_testing_links') }}</span></div>
+    <div class="links-out" id="links-out" aria-live="polite"></div>
     {% endif %}
   </div>
 
@@ -25,11 +54,12 @@
     <div class="drop" id="drop">
       <input type="file" id="images" name="images" accept="image/*" multiple>
       <p class="hint">{{ t('web_images_hint', count=max_files, mb=max_mb) }}</p>
+      <p class="hint" data-only="quick">{{ t('web_images_quick_hint') }}</p>
       <div class="thumbs" id="thumbs"></div>
     </div>
   </div>
 
-  <div class="field">
+  <div class="field" data-only="standard">
     <label class="check"><input type="checkbox" name="own_content" value="1">
       <span>{{ t('web_own_content') }}<br><span class="hint">{{ t('web_own_content_hint') }}</span></span></label>
     <label class="check"><input type="checkbox" name="rights" value="1" {% if prefs.authorized_media %}checked{% endif %}>
@@ -43,13 +73,19 @@
   </details>
 
   <div class="row">
-    <button class="primary" type="submit" id="submit">{{ t('web_submit') }}</button>
+    <button class="primary" type="submit" id="submit">
+      <span data-only="quick">⚡ {{ t('web_submit_quick') }}</span><span data-only="standard">{{ t('web_submit') }}</span></button>
     <span class="hint" id="busy" hidden>{{ t('web_uploading') }}</span>
   </div>
 </form>
 
 <script>
 (() => {
+  const form = document.getElementById('compose');
+  form.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
+    form.classList.toggle('quick', form.querySelector('input[name=mode]:checked').value === 'quick');
+  }));
+
   const input = document.getElementById('images');
   const thumbs = document.getElementById('thumbs');
   const drop = document.getElementById('drop');
@@ -84,10 +120,42 @@
   ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', (e) => add(e.dataTransfer.files));
-  document.getElementById('compose').addEventListener('submit', () => {
+  form.addEventListener('submit', () => {
     document.getElementById('submit').disabled = true;
     document.getElementById('busy').hidden = false;
   });
+
+  // "Test links": ask the server to read each URL now and show which method worked.
+  const test = document.getElementById('test-links');
+  if (test) {
+    const out = document.getElementById('links-out');
+    const busy = document.getElementById('links-busy');
+    const ai = document.getElementById('fetch_ai');
+    const L = {{ {'chars': t('web_chars'), 'failed': t('web_links_failed'), 'none': t('web_links_none')} | tojson }};
+    const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text) n.textContent = text; return n; };
+    test.addEventListener('click', async () => {
+      const urls = document.getElementById('urls').value + '\n' + document.getElementById('text').value;
+      out.innerHTML = ''; busy.hidden = false; test.disabled = true;
+      try {
+        const r = await fetch('/api/links/preview', {method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json'}, body: JSON.stringify({urls, allow_ai: ai ? ai.checked : false})});
+        const data = r.ok ? await r.json() : {results: []};
+        if (!data.results.length) out.appendChild(el('div', 'hint', L.none));
+        data.results.forEach((res) => {
+          const box = el('div');
+          const head = el('div', res.ok ? 'ok' : 'bad',
+            (res.ok ? '✅ ' + res.method + (res.ai_retrieved ? ' (AI)' : '') + ' · ' + res.chars + ' ' + L.chars : '❌ ' + L.failed) + ' — ' + res.url);
+          box.appendChild(head);
+          if (res.title) box.appendChild(el('b', '', res.title));
+          if (res.excerpt) box.appendChild(el('div', 'excerpt', res.excerpt));
+          box.appendChild(el('div', 'hint', res.attempts.map((a) => (a.ok ? '✓ ' : '✗ ') + a.method + ': ' + a.detail).join(' · ')));
+          out.appendChild(box);
+        });
+      } catch (e) {
+        out.appendChild(el('div', 'bad', String(e)));
+      } finally { busy.hidden = true; test.disabled = false; }
+    });
+  }
 })();
 </script>
 {% endblock %}

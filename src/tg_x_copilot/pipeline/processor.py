@@ -41,6 +41,7 @@ from .facts import build_verified_facts, packet_is_traceable
 from .overlays import (approved_regions, wants_region_edit, crop_region, composite_patches,
                        unchanged_outside, validate_pixel_scope, PromotionScopeError)
 from .image_qc import QCMode, build_messages, qc_verdict
+from .links import attach_linked_pages
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
 
@@ -74,6 +75,8 @@ class ImageOutcome:
 class Pipeline:
     def __init__(self, app: "AppContext") -> None:
         self.app = app
+        from .quick import QuickCreate  # quick.py builds on this module's helpers
+        self.quick = QuickCreate(self)
 
     # ------------------------------------------------------------------ helpers
 
@@ -84,7 +87,8 @@ class Pipeline:
             await self.app.repo.add_event(task_id, step, mask(message), level=level, data=data)
         except Exception:
             log.exception("failed to write task event")
-        progress = {"start": "clean", "clean": "triage", "triage": "media", "media": "vision",
+        progress = {"links": "links", "quick": "quick", "quick_image": "images",
+                    "start": "clean", "clean": "triage", "triage": "media", "media": "vision",
                     "vision": "evaluate", "evaluate": "rewrite", "rewrite": "images",
                     "IMAGE2": "qc", "IMAGE_QC": "images" if "retrying" in message else "qc",
                     "IMAGE_POLICY": "policy", "images": "persist", "R2_UPLOAD": "persist",
@@ -142,7 +146,13 @@ class Pipeline:
         locale = self.app.i18n.get(env.locale)
         started = time.monotonic()
         if env.processing_mode == "images_only":
-            await self._process_images_only(task_id, task, env, locale, cfg)
+            if (task.get("draft_meta") or {}).get("quick"):
+                await self.quick.images_only(task_id, task, env, locale, cfg)
+            else:
+                await self._process_images_only(task_id, task, env, locale, cfg)
+            return
+        if env.quick:
+            await self.quick.run(task_id, task, env, locale, cfg)
             return
         if task["attempts"]:  # leftovers from an interrupted earlier run
             try:
@@ -152,6 +162,10 @@ class Pipeline:
         await self._event(task_id, "start", f"attempt {task['attempts'] + 1}",
                           data={"messages": len(env.message_ids), "media": len(env.media)})
 
+        # Linked pages become extra source messages (any channel), then everything is cleaned.
+        await repo.set_stage(task_id, "links")
+        env, link_notes, link_ai_text = await attach_linked_pages(task_id, env, self.app,
+                                                                  self._event)
         # Clean each message before Jev; keep original envelope/source text for audit.
         await repo.set_stage(task_id, "clean")
         env, clean_fallback = await clean_bundle(env, self.app)
@@ -181,15 +195,16 @@ class Pipeline:
         images, dup_warnings = await self._load_media(task_id, env, cfg,
                                                      use=triage.use_media or explicit_image_request)
         try:
-            await self._run_editorial(task_id, env, locale, cfg, triage, images, dup_warnings,
-                                      started, clean_fallback=clean_fallback)
+            await self._run_editorial(task_id, env, locale, cfg, triage, images,
+                                      dup_warnings + link_notes, started,
+                                      clean_fallback=clean_fallback, ai_link_text=link_ai_text)
         finally:
             images.clear()  # drop references to downloaded bytes promptly
 
     async def _run_editorial(self, task_id: str, env: InputEnvelope, locale: Locale,
                              cfg: AppSettings, triage: TriageResult, images: list[LoadedImage],
                              dup_warnings: list[str], started: float, *,
-                             clean_fallback: bool = False) -> None:
+                             clean_fallback: bool = False, ai_link_text: bool = False) -> None:
         repo = self.app.repo
         await repo.set_stage(task_id, "vision")
         analyses = await self._analyze(task_id, env, images, locale, cfg)
@@ -248,6 +263,8 @@ class Pipeline:
             review.append(t(env.locale, "jev_review", reason=" ".join(triage.reasons)))
         if not was_suitable and not env.is_direct and evaluation.reason:
             review.append(t(env.locale, "evaluation_review", reason=evaluation.reason))
+        if ai_link_text and not env.is_direct:
+            review.append(t(env.locale, "link_ai_review"))
         text_review = list(review)
         media_review = [r for r in media_results if r.decision == ImageDecision.REVIEW]
         if media_review:

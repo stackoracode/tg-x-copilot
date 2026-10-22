@@ -4,6 +4,7 @@ Start:  DB -> settings overrides -> clients -> Telegram -> workers -> sweeper
 Stop:   workers (grace; claims of cancelled tasks are released) -> Telegram -> sweeper -> HTTP -> DB
 
 Channels: Telegram (bot intake) and web (compose page); both end in `submit()`.
+Either can run a task as "quick create" (WorkflowMode.QUICK / `/quick`): see pipeline/quick.py.
 
 Grouping: manual mode keeps one task per message or album. Per-user automatic bundle mode
 explicitly groups nearby forwards before durable intake; copyright/edit permissions stay separate.
@@ -32,6 +33,7 @@ from .services.config_service import ConfigService
 from .services.hub import ClientHub
 from .services.ops import Ops
 from .services.image_preferences import ImagePreferenceService
+from .services.link_reader import LinkReader
 from .services.storage import AssetStore
 from .services.web_inbox import WebInbox
 from .models import InputEnvelope
@@ -61,6 +63,7 @@ class AppContext:
         self.ops = Ops(self)
         self.image_preferences = ImagePreferenceService(self.repo)
         self.web_inbox = WebInbox(settings.web.inbox_dir)
+        self.links = LinkReader(self)
         self._last_inbox_purge = float("-inf")  # first sweep purges immediately
         self.workers = WorkerPool(
             self.pipeline.process, self.pipeline.mark_failed,
@@ -207,6 +210,7 @@ async def submit_envelope(app: Any, env: InputEnvelope, preferences: ImagePrefer
     env.workflow_mode = effective.workflow_mode
     env.image_action = effective.image_action
     env.image_options = effective.image_options
+    env.quick = env.quick or effective.workflow_mode == WorkflowMode.QUICK
     if not env.text and not env.media:
         return None
     task_id = await app.repo.create_task(env, task_id=task_id)

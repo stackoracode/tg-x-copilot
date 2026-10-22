@@ -69,7 +69,7 @@ where original media is re-read from and where results are delivered.
 
 | | Telegram (`channel="telegram"`) | Web (`channel="web"`) |
 |---|---|---|
-| Intake | bot: one message or album (or an explicit auto-bundle) | `/new`: text + links (optionally fetched, SSRF-guarded) + uploads = one task |
+| Intake | bot: one message or album (or an explicit auto-bundle) | `/new`: text + links + uploads = one task |
 | Identity | Telegram chat/user | `chat_id=0`, `user_id=0` (web operator profile) |
 | Original media | re-downloaded from the chat on every run | staged on local disk `data/web_inbox/<task_id>/<idx>` before the task row exists |
 | Progress / delivery | status card + images with caption in the chat | task page polls `/api/tasks/<id>/status`; draft, copy button and images on the page |
@@ -78,6 +78,33 @@ where original media is re-read from and where results are delivered.
 
 `TELEGRAM__ENABLED=false` runs web-only; the health check reports Telegram as *disabled*, not
 failed. The web channel is single-host by design (workers read the inbox from local disk).
+
+## Quick create and link reading
+
+Two pipeline variants hang off `Pipeline._process_claimed`:
+
+```
+envelope.quick?  ── yes ─► pipeline/quick.py: links → load images → 1 model call {post, image_prompt}
+                 │          → Image2 (first photo = reference; edit ×2, then generate) → R2 → draft
+                 └─ no ──► standard: links → clean → Jev → media → vision → evaluate → rewrite → …
+images_only + draft_meta.quick ─► QuickCreate.images_only (same post, same prompt, new image)
+```
+
+`envelope.quick` is set at intake from `WorkflowMode.QUICK` (Telegram `/quick` toggle or one-shot
+`/quick …`, web mode switch). It lives on the envelope (not in `processing_mode`, which
+regenerate / image re-runs rewrite), so a quick task stays quick. Quick create deliberately
+skips triage, evaluation, guards, the rights policy and QC; delivery, R2 accounting,
+compare-and-set saves and auth are shared with the standard path.
+
+`pipeline/links.py` runs first in **both** variants and channels: it picks URLs
+(`links_to_read`), reads them through `services/link_reader.LinkReader`, and appends each page
+as an extra source message (the stored envelope is untouched; regenerate reads again). The
+reader tries `direct` (desktop, then phone/WeChat UA) → `reader` service → headless `browser`
+(Playwright, every sub-request SSRF-checked, one browser at a time) → `llm` (a model with web
+access; text flagged AI-retrieved). `block_reason()` rejects verification pages
+("环境异常", Cloudflare, captchas) and empty shells so the next strategy runs. The web page reads
+links in the worker, not in the request; `POST /api/links/preview` and Telegram `/fetch` run
+the same reader on demand.
 
 ## Data flow (one task)
 

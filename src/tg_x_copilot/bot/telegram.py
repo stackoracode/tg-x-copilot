@@ -68,7 +68,7 @@ class TelegramBot:
         log.info("telegram bot connected", extra=ctx(username=getattr(me, "username", None)))
         c = self.client
         c.add_event_handler(self._on_command, events.NewMessage(
-            incoming=True, pattern=r"^/(start|help|menu|settings|recent|images)\b"))
+            incoming=True, pattern=r"^/(start|help|menu|settings|recent|images|quick|fetch)\b"))
         c.add_event_handler(self._on_message, events.NewMessage(
             incoming=True, func=lambda e: e.is_private and not (e.raw_text or "").startswith("/")
             and e.message.grouped_id is None))
@@ -359,6 +359,8 @@ class TelegramBot:
                 lines.append(f"📊 评估: 价值 {val_str}" + (f"（{esc(ev.get('angle'))}）" if ev.get("angle") else ""))
             else:
                 lines.append(f"📊 Evaluation: value {val_str}" + (f" ({esc(ev.get('angle'))})" if ev.get("angle") else ""))
+        if meta.get("quick"):
+            lines.append(tr("quick_badge"))
         for w in meta.get("warnings") or []:
             lines.append(f"⚠️ {esc(w)}")
         if media:
@@ -432,7 +434,11 @@ class TelegramBot:
             await event.respond(self.t("unauthorized"))
             return
         cmd = event.pattern_match.group(1)
-        if cmd in ("start", "help"):
+        if cmd == "quick":
+            await self._quick_command(event)
+        elif cmd == "fetch":
+            await self._fetch_command(event)
+        elif cmd in ("start", "help"):
             await event.respond(esc(self.t("welcome")), buttons=self._menu())
         elif cmd in ("menu", "settings"):
             await event.respond(self.t("menu_title"), buttons=self._menu())
@@ -440,6 +446,48 @@ class TelegramBot:
             await ImageTools(self).open(event)
         elif cmd == "recent":
             await event.respond(await self._recent_text())
+
+    async def _quick_command(self, event: Any) -> None:
+        """`/quick <text>` or a photo captioned `/quick ...`: one quick-create task.
+        Bare `/quick`: switch quick mode on/off for everything sent afterwards."""
+        message = event.message
+        if getattr(message, "grouped_id", None) is not None:
+            return  # an album captioned /quick arrives through _on_album as one unit
+        args = re.sub(r"^/quick(?:@\w+)?", "", event.raw_text or "", count=1).strip()
+        if args or getattr(message, "media", None) is not None:
+            await self._receive(event, [message], force_quick=True)
+            return
+
+        def toggle(prefs: ImagePreferences) -> ImagePreferences:
+            mode = WorkflowMode.MANUAL if prefs.workflow_mode == WorkflowMode.QUICK else WorkflowMode.QUICK
+            return prefs.model_copy(update={"workflow_mode": mode})
+
+        prefs = await self.app.image_preferences.update(event.sender_id, toggle)
+        await event.respond(self.t("quick_on" if prefs.workflow_mode == WorkflowMode.QUICK
+                                   else "quick_off"))
+
+    async def _fetch_command(self, event: Any) -> None:
+        """`/fetch <url>`: show what each link strategy gets, without creating a task."""
+        match = re.search(r"https?://\S+", event.raw_text or "")
+        if not match:
+            await event.respond(self.t("fetch_usage"))
+            return
+        await event.respond(self.t("working"))
+        result = await self.app.links.read(match[0])
+        lines = [self.t("fetch_title", url=esc(result.url))]
+        lines += [f"{'✅' if a.ok else '❌'} <b>{esc(a.method)}</b>: {esc(a.detail)}"
+                  for a in result.attempts]
+        page = result.page
+        if page is not None:
+            if page.ai_retrieved:
+                lines.append(self.t("link_ai_retrieved", url=esc(result.url)))
+            lines.append("")
+            if page.title:
+                lines.append(f"<b>{esc(page.title[:200])}</b>")
+            lines.append(esc(page.text[:1500]))
+        else:
+            lines.append(self.t("fetch_none"))
+        await event.respond("\n".join(lines))
 
     async def _on_message(self, event: events.NewMessage.Event) -> None:
         if not self._authorized(event.sender_id):
@@ -454,7 +502,7 @@ class TelegramBot:
         # Albums stay intact; opted-in automatic mode can combine a nearby text message with them.
         await self._receive(event, list(event.messages))
 
-    async def _receive(self, event: Any, messages: list[Any]) -> None:
+    async def _receive(self, event: Any, messages: list[Any], *, force_quick: bool = False) -> None:
         # Serialize receipt creation and collector insertion so simultaneous album/text events
         # share one status message. The collector owns the first event's emit closure.
         if not hasattr(self, "_intake_lock"):
@@ -462,6 +510,9 @@ class TelegramBot:
         async with self._intake_lock:
             service = getattr(self.app, "image_preferences", None)
             preferences = await service.get(event.sender_id) if service else ImagePreferences()
+            if force_quick or any(re.match(r"\s*/quick\b", getattr(m, "raw_text", None) or "")
+                                  for m in messages):
+                preferences = preferences.model_copy(update={"workflow_mode": WorkflowMode.QUICK})
             key = (event.chat_id, event.sender_id)
             collector = getattr(self, "_collector", None)
             automatic = preferences.workflow_mode == WorkflowMode.AUTO_BUNDLE

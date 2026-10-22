@@ -91,7 +91,10 @@ def keyboard(scope: str, prefs: ImagePreferences, tr, page: str = "main"):
                 ]
             )
     else:
-        rows = [[button("image_tools_auto_bundle", "w",
+        rows = [[button("image_tools_quick", "w",
+                        "manual" if prefs.workflow_mode == WorkflowMode.QUICK else "quick",
+                        prefs.workflow_mode == WorkflowMode.QUICK)],
+                [button("image_tools_auto_bundle", "w",
                         "manual" if prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE else "auto_bundle",
                         prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE)],
                 [button("image_tools_auto", "a", "auto", prefs.image_action is None)]]
@@ -250,6 +253,8 @@ class ImageTools:
         )
         if prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE:
             text += "\n" + tr("image_tools_auto_bundle_help")
+        elif prefs.workflow_mode == WorkflowMode.QUICK:
+            text += "\n" + tr("image_tools_quick_help")
         if (prefs.image_action and ACTIONS[prefs.image_action].text_capable and
             {ImageOption.MINIMAL_CHANGES, ImageOption.REMOVE_OVERLAYS} & prefs.image_options.flags):
             text += "\n" + tr("image_tools_creation_priority")

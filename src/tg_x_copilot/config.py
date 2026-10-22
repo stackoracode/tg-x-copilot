@@ -152,7 +152,8 @@ class PipelineSettings(BaseModel):
 
 
 class WebSettings(BaseModel):
-    """Web compose channel (works with TELEGRAM__ENABLED=false)."""
+    """Web compose channel (works with TELEGRAM__ENABLED=false) and link reading for both
+    channels (see services/link_reader.py)."""
 
     enabled: bool = True
     # Uploaded source images are staged on local disk (not R2, not MySQL) until the task is
@@ -165,6 +166,25 @@ class WebSettings(BaseModel):
     fetch_timeout_seconds: float = 15.0
     fetch_max_bytes: int = 2 * 1024 * 1024
     fetch_max_chars: int = 20000
+    # Links in Telegram messages: "short" = only when the post itself is little more than the
+    # link (its own text < 300 chars), "always", or "off".
+    fetch_telegram_links: Literal["off", "short", "always"] = "short"
+    fetch_max_links: int = 3
+    # Tried in order until one returns the real page (anti-bot pages such as WeChat's
+    # "环境异常" count as failures). Strategies that are not set up are skipped.
+    fetch_strategies: list[Literal["direct", "reader", "browser", "llm"]] = Field(
+        default_factory=lambda: ["direct", "reader", "browser", "llm"])
+    # Reader service: GET <fetch_reader_url><page url>. Sends the URL to that service;
+    # set to "" to keep fetching on this server only. The key (optional) is env-only.
+    fetch_reader_url: str = "https://r.jina.ai/"
+    fetch_reader_api_key: SecretStr = SecretStr("")
+    # Headless browser (needs `pip install playwright`). Empty path = Playwright's own
+    # Chromium, else the first Chrome/Chromium on PATH. Env-only: it names an executable.
+    fetch_browser_path: str = ""
+    fetch_browser_timeout_seconds: float = 30.0
+    # Model with web access behind the CPA proxy (e.g. a search/browsing model). Empty = off.
+    # Its text is marked "AI-retrieved" because it cannot be verified against the page.
+    fetch_llm_model: str = ""
 
 
 class AdminSettings(BaseModel):
@@ -238,6 +258,12 @@ EDITABLE_KEYS: frozenset[str] = frozenset({
     "storage.jpeg_quality",
     "pipeline.max_rewrite_attempts",
     "web.fetch_urls",
+    "web.fetch_telegram_links",
+    "web.fetch_max_links",
+    "web.fetch_strategies",
+    "web.fetch_reader_url",
+    "web.fetch_llm_model",
+    "web.fetch_timeout_seconds",
     "web.inbox_ttl_days",
     "web.max_files",
     "pipeline.max_post_chars",
@@ -249,8 +275,8 @@ EDITABLE_KEYS: frozenset[str] = frozenset({
 def is_secret_key(key: str) -> bool:
     """True for credential-like settings, which must never be stored in MySQL."""
     leaf = key.rsplit(".", 1)[-1]
-    return leaf in {"api_key", "api_hash", "bot_token", "password", "access_key_id",
-                    "secret_access_key"}
+    return leaf.endswith("api_key") or leaf in {"api_hash", "bot_token", "password",
+                                                "access_key_id", "secret_access_key"}
 
 
 def get_path(settings: AppSettings, key: str) -> Any:
