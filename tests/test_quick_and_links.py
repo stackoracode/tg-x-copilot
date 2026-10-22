@@ -312,13 +312,14 @@ async def test_block_page_falls_through_to_reader():
         if request.url.host == "r.jina.ai":
             assert request.headers["accept"] == "application/json"
             return httpx.Response(200, json={"data": {"title": "Real title",
-                                                      "content": "Real article. " * 40}})
+                                                      "content": "Menu\n\n\n\n\n  Real article. " * 40}})
         return httpx.Response(200, text="<html><body><p>当前环境异常，完成验证后即可继续访问。</p></body></html>",
                               headers={"content-type": "text/html"})
 
     app = reader_app(handler, fetch_strategies=["direct", "reader"])
     result = await LinkReader(app, resolver=public).read("https://mp.weixin.qq.com/s/abc")
     assert result.page and result.page.method == "reader" and result.page.title == "Real title"
+    assert "\n\n\n" not in result.page.text
     assert [a.method for a in result.attempts] == ["direct", "reader"]
     assert "环境异常" in result.attempts[0].detail
     # direct tried a desktop browser, then a phone/WeChat UA, before giving up

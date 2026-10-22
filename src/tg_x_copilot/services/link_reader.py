@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import time
 from dataclasses import dataclass, field
@@ -51,6 +52,7 @@ STRATEGIES = ("direct", "reader", "browser", "llm")
 _SYSTEM_BROWSERS = ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable",
                     "microsoft-edge")
 _SKIP_RESOURCES = {"image", "media", "font"}
+_BLANK_RUNS = re.compile(r"\n{3,}")
 
 
 @dataclass(frozen=True)
@@ -210,7 +212,10 @@ class LinkReader:
             title, text = str(data.get("title") or ""), str(data.get("content") or data.get("text") or "")
         except (ValueError, AttributeError):
             text = body.decode("utf-8", errors="replace")
-        return PageContent(url, " ".join(title.split()), text.strip()[: cfg.fetch_max_chars],
+        # Reader output is markdown-ish with long runs of blank lines (menus, spacing).
+        text = "\n".join(line.strip() for line in text.splitlines())
+        text = _BLANK_RUNS.sub("\n\n", text).strip()
+        return PageContent(url, " ".join(title.split()), text[: cfg.fetch_max_chars],
                            method="reader")
 
     def _browser_executable(self) -> str | None:
