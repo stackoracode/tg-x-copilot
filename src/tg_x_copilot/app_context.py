@@ -4,7 +4,7 @@ Start:  DB -> settings overrides -> clients -> Telegram -> workers -> sweeper
 Stop:   workers (grace; claims of cancelled tasks are released) -> Telegram -> sweeper -> HTTP -> DB
 
 Channels: Telegram (bot intake) and web (compose page); both end in `submit()`.
-Either can run a task as "quick create" (WorkflowMode.QUICK / `/quick`): see pipeline/quick.py.
+Quick create (WorkflowMode.QUICK / `/quick`) uses the standard pipeline with a required image.
 
 Grouping: manual mode keeps one task per message or album. Per-user automatic bundle mode
 explicitly groups nearby forwards before durable intake; copyright/edit permissions stay separate.

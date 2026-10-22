@@ -97,13 +97,7 @@
 </div>
 {% endif %}
 
-{% if can_edit_images and (task.draft_meta or {}).quick %}
-<form class="card" method="post" action="/tasks/{{ task.id }}/images">
-  <h3 style="margin-top:0">{{ t('web_image_tools') }}</h3>
-  <p class="hint">{{ t('web_quick_new_image_hint') }}</p>
-  <button class="primary" type="submit">{{ t('web_quick_new_image') }}</button>
-</form>
-{% elif can_edit_images %}
+{% if can_edit_images %}
 {% set opts = prefs.image_options %}
 <form class="card" method="post" action="/tasks/{{ task.id }}/images">
   <h3 style="margin-top:0">{{ t('web_image_tools') }}</h3>
@@ -111,7 +105,7 @@
   {% include "_image_options.html" %}
   <label class="check"><input type="checkbox" name="rights" value="1" {% if prefs.authorized_media %}checked{% endif %}>
     <span>{{ t('web_rights') }}</span></label>
-  <button class="primary" type="submit">{{ t('web_rerun_images') }}</button>
+  <button class="primary" type="submit">{{ t('web_quick_new_image' if (task.draft_meta or {}).quick else 'web_rerun_images') }}</button>
 </form>
 {% endif %}
 

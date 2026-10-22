@@ -113,10 +113,10 @@ class InputEnvelope(BaseModel):
     image_retry_indices: list[int] | None = None
     image_edit_authorizations: dict[str, ImageEditAuthorization] = Field(default_factory=dict)
     is_direct: bool = False  # True when sent directly by operator (not forwarded)
-    # Quick create: always one post + one generated image, no triage/evaluation/QC gates
-    # (pipeline/quick.py). Kept on the envelope so regenerate / image re-runs stay quick.
+    # Quick create: standard rules and checks, with a required generated image.
+    # Kept on the envelope so regenerate / image re-runs retain this requirement.
     quick: bool = False
-    quick_instructions: str = ""  # optional operator direction for the quick text + image
+    quick_instructions: str = ""  # optional style direction, shared by both workflows
     # Read linked pages before drafting (web: compose checkbox; Telegram: web.fetch_telegram_links)
     fetch_links: bool = False
     fetch_ai: bool = True  # allow the "llm" link strategy for this task

@@ -11,6 +11,7 @@ import httpx
 import pytest
 from conftest import Recorder, png_bytes
 from fastapi.testclient import TestClient
+from test_bilingual import good_qc
 from test_image_tools import button_data
 
 from tg_x_copilot.app_context import submit_envelope
@@ -18,11 +19,32 @@ from tg_x_copilot.bot.image_tools import keyboard
 from tg_x_copilot.bot.telegram import TelegramBot
 from tg_x_copilot.config import AppSettings, is_secret_key
 from tg_x_copilot.i18n import I18n
-from tg_x_copilot.image_settings import ImagePreferences, WorkflowMode
-from tg_x_copilot.models import InputEnvelope, MediaKind, SourceMedia, TaskStatus
+from tg_x_copilot.image_settings import (
+    ImageAction,
+    ImageOption,
+    ImageOptions,
+    ImagePreferences,
+    InformationDensity,
+    WorkflowMode,
+)
+from tg_x_copilot.models import (
+    Evaluation,
+    FactVerification,
+    ImageAnalysis,
+    ImageQC,
+    InputEnvelope,
+    MediaKind,
+    RewriteResult,
+    SourceMedia,
+    TaskStatus,
+    VerifiedFact,
+    VerifiedFacts,
+)
+from tg_x_copilot.pipeline.cleaning import CoreContent
+from tg_x_copilot.pipeline.language import LanguageCheck
 from tg_x_copilot.pipeline.links import attach_linked_pages, links_to_read
 from tg_x_copilot.pipeline.processor import Pipeline
-from tg_x_copilot.pipeline.quick import QuickDraft, strip_command
+from tg_x_copilot.pipeline.quick import strip_command
 from tg_x_copilot.services.link_reader import LinkReader, ReadResult
 from tg_x_copilot.services.url_fetch import PageContent, block_reason
 from tg_x_copilot.web.app import create_app
@@ -34,8 +56,9 @@ ARTICLE = "<html><head><title>Launch</title></head><body><article><p>" + \
 
 
 def quick_env(**kw: Any) -> InputEnvelope:
-    base = dict(chat_id=1, user_id=7, message_ids=[10], text="New coffee shop opens downtown",
-                message_texts=["New coffee shop opens downtown"], quick=True)
+    base = {"chat_id": 1, "user_id": 7, "message_ids": [10],
+            "text": "New coffee shop opens downtown",
+            "message_texts": ["New coffee shop opens downtown"], "quick": True}
     return InputEnvelope(**{**base, **kw})
 
 
@@ -45,89 +68,155 @@ def task_of(env: InputEnvelope, **kw: Any) -> dict[str, Any]:
 
 
 def saved(app) -> tuple[TaskStatus, str, dict[str, Any]]:
-    (task_id, status, text, meta), kw = app.repo.named("save_draft")[-1]
+    (_task_id, status, text, meta), kw = app.repo.named("save_draft")[-1]
     assert kw["expected"] == (TaskStatus.PROCESSING,)
     return status, text, meta
 
 
+SOURCE = "Acme X12 supports 12 devices over HTTP/3."
+POSTS = {"en-US": "Acme X12: support for 12 devices over HTTP/3.",
+         "zh-CN": "Acme X12 支持 12 台设备，使用 HTTP/3。"}
+
+
 @pytest.fixture
 def quick_app(app):
-    app.storage.returns["persist"] = "assets/aa/x.jpg"
-    app.hub.cpa.returns.update(
-        chat_json=QuickDraft(post="Fresh beans, fresh start ☕", image_prompt="A cozy cafe",
-                             alt_text="Cafe"),
-        images_generate=png_bytes("blue"), images_edit=png_bytes("green"))
+    app.config.current.jev.enabled = False
+    app.storage.returns["persist"] = "assets/aa/x.png"
+    app.repo.returns.update(get_rules={}, get_hooks=[])
+    app.test_responses = {}
+
+    def chat(model, messages, schema, **kwargs):
+        code = app.config.current.default_locale
+        responses = {
+            CoreContent: CoreContent(core_text=SOURCE),
+            LanguageCheck: LanguageCheck(passed=True),
+            VerifiedFacts: VerifiedFacts(facts=[VerifiedFact(text=POSTS[code], evidence=SOURCE)]),
+            FactVerification: FactVerification(passed=True),
+            Evaluation: Evaluation(suitable=True, value_score=.8, key_facts=[POSTS[code]]),
+            RewriteResult: RewriteResult(post=POSTS[code], hook="Acme X12",
+                                          added_value="Clear summary" if code == "en-US" else "提炼核心信息。",
+                                          image_brief="Device facts" if code == "en-US" else "设备信息卡片。"),
+            ImageAnalysis: ImageAnalysis(description="Device infographic", image_type="infographic",
+                                          relevance=.9, extracted_text=SOURCE),
+            ImageQC: good_qc(),
+        }
+        result = app.test_responses.get(schema, responses[schema])
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    app.hub.cpa.returns.update(chat_json=chat, images_generate=png_bytes("blue"),
+                               images_edit=png_bytes("green"))
     return app
 
 
-# --------------------------------------------------------------------------- quick create
+def source_env(code="en-US", **kwargs):
+    values = {"text": SOURCE, "message_texts": [SOURCE], "locale": code, "is_direct": True, **kwargs}
+    return quick_env(**values)
 
 
-async def test_quick_text_only_always_returns_post_and_image(quick_app, settings):
-    env = quick_env()
-    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(env))
-    status, text, meta = saved(quick_app)
-    assert status == TaskStatus.DRAFT_READY and text.startswith("Fresh beans")
-    assert meta["quick"] and meta["image_prompt"] == "A cozy cafe"
-    assert [m["decision"] for m in meta["media"]] == ["generate"]
-    assert meta["media"][0]["asset_kind"] == "final" and meta["media"][0]["ai_generated"]
-    cpa = quick_app.hub.cpa
-    assert len(cpa.named("images_generate")) == 1 and not cpa.named("images_edit")
-    (model, messages, schema), _ = cpa.named("chat_json")[0]
-    assert model == settings.models.text_model and schema is QuickDraft
-    # bypassed: no Jev, no evaluation, no QC call
-    assert not quick_app.hub.jev.calls and len(cpa.named("chat_json")) == 1
-    assert quick_app.repo.named("save_triage") == [] and quick_app.repo.named("save_evaluation") == []
+@pytest.mark.parametrize("code", ["en-US", "zh-CN"])
+async def test_quick_and_standard_use_identical_writing_and_image_rules(quick_app, code):
+    quick_app.config.current.default_locale = code
+    quick_app.repo.returns.update(get_rules={"style": "Configured style", "max_hashtags": 0},
+                                  get_hooks=[{"pattern": "Configured hook", "example": "Acme"}])
+    options = ImageOptions(flags={ImageOption.KEEP_BRANDS, ImageOption.FACTUAL_PRIORITY},
+                           information_density=InformationDensity.HIGH, target_locale=code)
+    records = []
+    for quick in (False, True):
+        quick_app.hub.cpa.calls.clear()
+        envelope = source_env(code, quick=quick, image_action=ImageAction.INFO_CARD,
+                              image_options=options)
+        await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(envelope))
+        status, post, meta = saved(quick_app)
+        assert status == TaskStatus.DRAFT_READY and post == POSTS[code]
+        assert meta["verified_facts"]["facts"] and meta["quick"] == quick
+        calls = quick_app.hub.cpa.named("chat_json")
+        rewrite = next((a, kw) for a, kw in calls if a[2] is RewriteResult)
+        assert "Configured style" in rewrite[0][1][0]["content"]
+        assert "Configured hook" in rewrite[0][1][0]["content"]
+        schemas = [a[2] for a, _ in calls]
+        assert Evaluation in schemas and FactVerification in schemas and ImageQC in schemas
+        image = quick_app.hub.cpa.named("images_generate")[0]
+        assert POSTS[code] in image[0][1] and "high" in image[0][1]
+        records.append((rewrite, image))
+    assert records[0] == records[1]  # same models, prompts, options and provider parameters
+    assert len(quick_app.repo.named("save_triage")) == 2
+    assert len(quick_app.repo.named("save_evaluation")) == 2
 
 
-async def test_quick_uses_attached_photo_as_reference(quick_app, settings):
-    quick_app.telegram = Recorder(fetch_media={10: png_bytes("red")})
-    env = quick_env(media=[SourceMedia(message_id=10, kind=MediaKind.PHOTO, forwarded=True)],
-                    is_direct=False)
-    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(env))
+async def test_default_quick_adds_image_without_changing_standard_text(quick_app):
+    posts = []
+    for quick in (False, True):
+        quick_app.hub.cpa.calls.clear()
+        await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env(quick=quick)))
+        status, text, _meta = saved(quick_app)
+        assert status == TaskStatus.DRAFT_READY
+        assert bool(quick_app.hub.cpa.named("images_generate")) == quick
+        posts.append(text)
+    assert posts[0] == posts[1]
+
+
+@pytest.mark.parametrize("action", [None, ImageAction.KEEP, ImageAction.TEXT_ONLY, ImageAction.OMIT,
+                                     ImageAction.LOCALIZE])
+async def test_quick_text_only_requires_fact_based_image(quick_app, action):
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env(image_action=action)))
     status, _, meta = saved(quick_app)
-    assert status == TaskStatus.DRAFT_READY
-    assert [m["decision"] for m in meta["media"]] == ["omit", "generate"]  # source not delivered
-    (model, messages, _), _ = quick_app.hub.cpa.named("chat_json")[0]
-    assert model == settings.models.vision_model
-    assert any(part.get("type") == "image_url" for part in messages[1]["content"])
-    (args, _), = quick_app.hub.cpa.named("images_edit")
-    assert args[2] == png_bytes("red")  # forwarded photo used without any rights gate
-    assert not quick_app.hub.cpa.named("images_generate")
+    assert status == TaskStatus.DRAFT_READY and meta["image_action"] == "info_card"
+    assert meta["media"][-1]["asset_kind"] == "final"
+    assert meta["media"][-1]["ai_generated"]
+    assert not quick_app.hub.cpa.named("images_edit")
 
 
-async def test_quick_falls_back_to_generation_when_edit_keeps_failing(quick_app):
+async def test_quick_analyzes_all_photos_and_uses_source_facts(quick_app):
+    quick_app.telegram = Recorder(fetch_media={10: png_bytes("red"), 11: png_bytes("green")})
+    envelope = source_env(image_action=ImageAction.INFO_CARD, media=[
+        SourceMedia(message_id=i, kind=MediaKind.PHOTO, forwarded=True) for i in (10, 11)])
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(envelope))
+    calls = quick_app.hub.cpa.named("chat_json")
+    assert len([a for a, _ in calls if a[2] is ImageAnalysis]) == 2
+    assert len(saved(quick_app)[2]["source_analyses"]) == 2
+    assert not quick_app.hub.cpa.named("images_edit")
+    assert SOURCE in next(a[1][-1]["content"] for a, _ in calls if a[2] is VerifiedFacts)
+
+
+@pytest.mark.parametrize("failure", ["provider", "qc", "facts", "storage", "limit"])
+async def test_quick_cannot_be_ready_or_approvable_without_verified_image(quick_app, failure):
+    if failure == "provider":
+        quick_app.hub.cpa.returns["images_generate"] = RuntimeError("upstream down")
+    elif failure == "qc":
+        quick_app.test_responses[ImageQC] = good_qc(passed=False, facts_consistent=False)
+    elif failure == "facts":
+        quick_app.test_responses[VerifiedFacts] = VerifiedFacts()
+    elif failure == "storage":
+        from tg_x_copilot.services.storage import StorageBudgetExceeded
+        quick_app.storage.returns["persist"] = StorageBudgetExceeded("budget")
+    else:
+        quick_app.repo.returns["get_rules"] = {"max_images": 0}
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env()))
+    status, text, meta = saved(quick_app)
+    assert status == TaskStatus.NEEDS_REVIEW and text == POSTS["en-US"]
+    assert meta["problems"] and not any(m["asset_kind"] == "final" for m in meta["media"])
+    if failure in ("facts", "limit"):
+        assert not quick_app.hub.cpa.named("images_generate")
+
+
+async def test_quick_failed_source_edit_falls_back_to_standard_information_card(quick_app):
     quick_app.telegram = Recorder(fetch_media={10: png_bytes("red")})
+    quick_app.config.current.pipeline.direct_uploads_owned = True
     quick_app.hub.cpa.returns["images_edit"] = RuntimeError("edits unsupported")
-    env = quick_env(media=[SourceMedia(message_id=10, kind=MediaKind.PHOTO)])
-    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(env))
+    envelope = source_env(image_action=ImageAction.LOCALIZE,
+                          media=[SourceMedia(message_id=10, kind=MediaKind.PHOTO, forwarded=False)])
+    # Localization needs an actual source-language change.
+    quick_app.test_responses[ImageAnalysis] = ImageAnalysis(
+        description="Device infographic", image_type="infographic", relevance=.9,
+        extracted_text=SOURCE, text_language="zh")
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(envelope))
     status, _, meta = saved(quick_app)
-    assert status == TaskStatus.DRAFT_READY and meta["media"][-1]["decision"] == "generate"
-    assert len(quick_app.hub.cpa.named("images_edit")) == 2
-    assert len(quick_app.hub.cpa.named("images_generate")) == 1
-
-
-async def test_quick_image_failure_still_delivers_the_post(quick_app):
-    quick_app.hub.cpa.returns["images_generate"] = RuntimeError("upstream down")
-    quick_app.telegram = Recorder(get_task=None)
-    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(quick_env()))
-    status, text, meta = saved(quick_app)
-    assert status == TaskStatus.NEEDS_REVIEW and text.startswith("Fresh beans")
-    assert meta["media"][0]["failure_stage"] == "IMAGE2" and meta["review"]
-    assert meta["problems"] == []  # approvable as-is
-    assert quick_app.telegram.named("send_draft")  # delivered anyway
-
-
-async def test_quick_shortens_an_over_long_post(quick_app):
-    long = QuickDraft(post="x" * 400, image_prompt="p")
-    short = QuickDraft(post="Short and sweet", image_prompt="p")
-    replies = iter([long, short])
-    quick_app.hub.cpa.returns["chat_json"] = lambda *a, **k: next(replies)
-    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(quick_env()))
-    _, text, meta = saved(quick_app)
-    assert text == "Short and sweet" and not meta["warnings"]
-    retry_messages = quick_app.hub.cpa.named("chat_json")[1][0][1]
-    assert "280" in retry_messages[-1]["content"]
+    assert status == TaskStatus.DRAFT_READY and meta["image_action"] == "info_card"
+    assert quick_app.hub.cpa.named("images_edit")
+    assert quick_app.hub.cpa.named("images_generate")
+    assert any(a[2] is ImageQC for a, _ in quick_app.hub.cpa.named("chat_json"))
 
 
 def test_strip_command_removes_telegram_prefix():
@@ -136,16 +225,47 @@ def test_strip_command_removes_telegram_prefix():
     assert env.text == "launch day!" and env.message_texts == ["launch day!"]
 
 
-async def test_quick_image_rerun_keeps_post(quick_app):
-    env = quick_env(processing_mode="images_only")
-    task = task_of(env, draft_text="Existing post",
-                   draft_meta={"quick": True, "image_prompt": "A cozy cafe", "text_warnings": []})
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_quick_image_rerun_keeps_post_and_uses_verified_facts(quick_app, legacy):
+    envelope = source_env(quick=not legacy, processing_mode="images_only")
+    task = task_of(envelope, draft_text="Existing post", draft_meta={
+        "quick": True, "canonical_text": SOURCE, "image_prompt": "Invented 999 devices",
+        "problems": [I18n().t("en-US", "quick_image_missing")], "text_review": [], "text_warnings": []})
     await Pipeline(quick_app)._process_claimed(TASK_ID, task)
     status, text, meta = saved(quick_app)
-    assert text == "Existing post" and status == TaskStatus.DRAFT_READY
-    (args, _), = quick_app.hub.cpa.named("images_generate")
-    assert args[1].startswith("A cozy cafe")
-    assert not quick_app.hub.cpa.named("chat_json")  # no new text
+    assert text == "Existing post" and status == TaskStatus.DRAFT_READY and not meta["problems"]
+    assert "image_prompt" not in meta
+    calls = quick_app.hub.cpa.named("chat_json")
+    assert all(a[2] is not RewriteResult for a, _ in calls)
+    assert any(a[2] is FactVerification for a, _ in calls)
+    assert any(a[2] is ImageQC for a, _ in calls)
+    image_prompt = quick_app.hub.cpa.named("images_generate")[0][0][1]
+    assert POSTS["en-US"] in image_prompt and "Invented 999" not in image_prompt
+
+
+async def test_legacy_photo_only_retry_extracts_facts_from_original_image(quick_app):
+    quick_app.telegram = Recorder(fetch_media={10: png_bytes("red")})
+    envelope = source_env(text="", message_texts=[], processing_mode="images_only",
+                          media=[SourceMedia(message_id=10, kind=MediaKind.PHOTO)])
+    quick_app.test_responses[VerifiedFacts] = VerifiedFacts(facts=[
+        VerifiedFact(text=POSTS["en-US"], evidence=SOURCE, source_idx=0)])
+    task = task_of(envelope, draft_text="Existing post", draft_meta={
+        "quick": True, "canonical_text": "", "image_prompt": "An old creative prompt"})
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task)
+    status, text, meta = saved(quick_app)
+    assert status == TaskStatus.DRAFT_READY and text == "Existing post"
+    assert meta["verified_facts"]["facts"][0]["source_idx"] == 0
+    assert any(a[2] is ImageAnalysis for a, _ in quick_app.hub.cpa.named("chat_json"))
+
+
+async def test_quick_writing_uses_instructions_without_changing_source_facts(quick_app):
+    envelope = source_env(quick_instructions="Use a flat vector style")
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(envelope))
+    calls = quick_app.hub.cpa.named("chat_json")
+    message = next(a[1][0]["content"] for a, _ in calls if a[2] is RewriteResult)
+    assert "Use a flat vector style" in message and "must not override source facts" in message
+    facts = next(a[1][-1]["content"] for a, _ in calls if a[2] is VerifiedFacts)
+    assert "flat vector style" not in facts
 
 
 async def test_submit_marks_quick_profile_tasks(app):
@@ -453,6 +573,8 @@ def test_compose_page_defaults_to_remembered_quick_mode():
     r = client.get("/new")
     assert 'name="mode" value="quick" checked' in r.text and 'id="test-links"' in r.text
     assert 'class="card quick"' in r.text
+    assert 'class="field" data-only="standard"' not in r.text
+    assert 'name="image_action"' in r.text and 'name="flag"' in r.text
 
 
 def test_compose_quick_submission():
@@ -492,4 +614,4 @@ def test_quick_task_page_offers_new_image():
     client, _ = make_client(task)
     r = client.get(f"/tasks/{TASK_ID}")
     assert r.status_code == 200 and "New image" in r.text and "A neon city" in r.text
-    assert 'name="image_action"' not in r.text  # quick tasks don't expose the action menu
+    assert 'name="image_action"' in r.text  # same image tools as standard mode

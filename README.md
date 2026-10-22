@@ -221,25 +221,25 @@ reverse proxy such as Caddy (`copilot.example.com { reverse_proxy 127.0.0.1:8080
 
 ## Quick create (always text + image)
 
-A separate, short path for when you just want a post and a picture, on both channels:
+Quick create uses the **same pipeline** as standard mode: link reading, cleaning, Jev,
+image analysis, evaluation, configured writing rules and hooks, verified fact packets,
+image settings and image QC. It adds the requirement to generate both a post and an image;
+it does not use separate creative prompts or bypass factual checks.
 
 | | Telegram | Web |
 |---|---|---|
-| Switch on for everything you send | `/quick` (send again to switch off), or **⚡ Quick create** in Image Tools | choose **⚡ Quick create** on `/new` (remembered) |
-| One quick task | `/quick <text>`, or a photo/album captioned `/quick …` | — |
-| New picture, same post | **Redo images** on the card | **🎨 New image** on the task page |
+| Switch on | `/quick` (send again to switch off), or **⚡ Quick create** in Image Tools | **⚡ Quick create** on `/new` (remembered) |
+| One task | `/quick <text>`, or a photo/album captioned `/quick …` | select the mode before submitting |
+| New picture, same post | **Redo images** | image tools on the task page |
 
-What happens: linked pages are read (optional), then one model call writes the post (within
-`PIPELINE__MAX_POST_CHARS`, shortened and retried if needed) plus an image prompt, seeing any
-attached photos. Image2 then generates the picture: the first attached photo is the reference
-(`images_edit`). If editing keeps failing it falls back to text-to-image, so a picture still
-arrives. The task ends as `draft_ready` with the image attached, or as `needs_review` with the post
-ready and the image failure explained.
-
-Skipped on purpose: Jev triage, the suitability evaluation, fact guards, the rights-aware
-image policy, edit-rights confirmation and image QC. Attached photos are used only as
-references; they are not delivered or kept. Still enforced: who may use it (Telegram allow
-list, admin login) and the image provider's own content rules.
+Both modes expose the same image actions, flags, target language and density controls.
+In quick mode, automatic/keep/omit/text-only actions default to a verified information card;
+a source-dependent action without source images also uses an information card. Other actions
+are honored, with a standard information-card fallback if they produce no usable generated image.
+The same configured image limit and R2 budgets apply. Missing facts, failed generation or
+failed QC cannot be bypassed to satisfy the image requirement: the draft stays `needs_review`
+and cannot be approved until it has a verified generated image. Image-only retries retain
+the post and rebuild images from source facts, including drafts created by older quick versions.
 
 ## Reading links
 
@@ -478,7 +478,7 @@ this change does not rename provider model IDs or alter production configuration
 | Jev disabled, unconfigured, timeout, or error | Warning logged; the task continues and the main LLM decides |
 | Telegram media download fails | Affected images → REVIEW with the reason; text draft continues |
 | Image model / QC / R2 upload fails | Affected image → REVIEW with the reason; text draft continues |
-| Quick create: image generation fails | Edit retried, then text-to-image; if all fail the post is still delivered (`needs_review`) |
+| Quick create: image generation fails | Standard image handling and QC; missing generated image blocks approval until retried successfully |
 | A linked page blocks bots ("环境异常", captcha, JS shell) | Next strategy (phone UA → reader → browser → AI); every attempt on the timeline |
 | R2 fetch fails while sending a draft | The text and review card are still sent, with a note that images are unavailable |
 | Image2 output fails visual QC | → REVIEW; can be kept as a review copy if enabled |

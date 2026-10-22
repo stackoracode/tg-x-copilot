@@ -26,7 +26,7 @@
     <textarea id="text" name="text" placeholder="{{ t('web_text_placeholder') }}" autofocus></textarea>
   </div>
 
-  <div class="field" data-only="quick">
+  <div class="field">
     <label for="instructions">{{ t('web_instructions') }}</label>
     <textarea id="instructions" name="instructions" rows="2" style="min-height:0"
               placeholder="{{ t('web_instructions_placeholder') }}"></textarea>
@@ -59,7 +59,7 @@
     </div>
   </div>
 
-  <div class="field" data-only="standard">
+  <div class="field">
     <label class="check"><input type="checkbox" name="own_content" value="1">
       <span>{{ t('web_own_content') }}<br><span class="hint">{{ t('web_own_content_hint') }}</span></span></label>
     <label class="check"><input type="checkbox" name="rights" value="1" {% if prefs.authorized_media %}checked{% endif %}>

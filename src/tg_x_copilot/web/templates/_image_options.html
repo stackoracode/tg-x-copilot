@@ -1,6 +1,6 @@
 {# Shared image-intent controls. Expects: actions, options, densities, locales, opts (ImageOptions), prefs.
-   data-only="standard" parts are hidden while the compose page is in quick mode. #}
-<div class="field" data-only="standard">
+   Both workflows use the same controls. #}
+<div class="field">
   <label for="image_action">{{ t('web_image_action') }}</label>
   <select id="image_action" name="image_action">
     <option value="" {% if not prefs.image_action %}selected{% endif %}>{{ t('web_image_action_auto') }}</option>
@@ -25,9 +25,9 @@
     </select>
   </div>
 </div>
-<label class="check" data-only="standard"><input type="checkbox" name="custom_options" value="1">
+<label class="check"><input type="checkbox" name="custom_options" value="1">
   <span>{{ t('web_custom_options') }}<br><span class="hint">{{ t('web_custom_options_hint') }}</span></span></label>
-<div class="row" data-only="standard">
+<div class="row">
   {% for o in options %}
   <label class="check" style="margin:0 12px 0 0"><input type="checkbox" name="flag" value="{{ o }}" {% if o in opts.flags %}checked{% endif %}> {{ t('image_option_' ~ o) }}</label>
   {% endfor %}

@@ -81,22 +81,17 @@ failed. The web channel is single-host by design (workers read the inbox from lo
 
 ## Quick create and link reading
 
-Two pipeline variants hang off `Pipeline._process_claimed`:
+Both modes use `Pipeline._process_claimed`: links → clean → Jev → media → vision →
+evaluate → standard rewrite and guards → verified facts → standard images and QC → R2.
+Quick mode (`envelope.quick`, set by `/quick` or the web mode switch) requires a generated
+image. It defaults incompatible no-image actions to an information card and can fall back
+to a fact-based card when a requested source action cannot produce an image. All image flags,
+locale, density rules, configured writing rules/hooks and storage limits remain shared.
+Missing verified facts or failed QC blocks completion/approval rather than permitting invention.
+Image-only retries use the standard path, keep the post unchanged and revalidate source facts;
+old quick image prompts are never treated as factual evidence.
 
-```
-envelope.quick?  ── yes ─► pipeline/quick.py: links → load images → 1 model call {post, image_prompt}
-                 │          → Image2 (first photo = reference; edit ×2, then generate) → R2 → draft
-                 └─ no ──► standard: links → clean → Jev → media → vision → evaluate → rewrite → …
-images_only + draft_meta.quick ─► QuickCreate.images_only (same post, same prompt, new image)
-```
-
-`envelope.quick` is set at intake from `WorkflowMode.QUICK` (Telegram `/quick` toggle or one-shot
-`/quick …`, web mode switch). It lives on the envelope (not in `processing_mode`, which
-regenerate / image re-runs rewrite), so a quick task stays quick. Quick create deliberately
-skips triage, evaluation, guards, the rights policy and QC; delivery, R2 accounting,
-compare-and-set saves and auth are shared with the standard path.
-
-`pipeline/links.py` runs first in **both** variants and channels: it picks URLs
+`pipeline/links.py` runs first in both modes and channels: it picks URLs
 (`links_to_read`), reads them through `services/link_reader.LinkReader`, and appends each page
 as an extra source message (the stored envelope is untouched; regenerate reads again). The
 reader tries `direct` (desktop, then phone/WeChat UA) → `reader` service → headless `browser`

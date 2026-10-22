@@ -42,6 +42,7 @@ from .overlays import (approved_regions, wants_region_edit, crop_region, composi
                        unchanged_outside, validate_pixel_scope, PromotionScopeError)
 from .image_qc import QCMode, build_messages, qc_verdict
 from .links import attach_linked_pages
+from .quick import strip_command
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
 
@@ -75,8 +76,6 @@ class ImageOutcome:
 class Pipeline:
     def __init__(self, app: "AppContext") -> None:
         self.app = app
-        from .quick import QuickCreate  # quick.py builds on this module's helpers
-        self.quick = QuickCreate(self)
 
     # ------------------------------------------------------------------ helpers
 
@@ -145,14 +144,17 @@ class Pipeline:
         env = InputEnvelope.model_validate(task["envelope"])
         locale = self.app.i18n.get(env.locale)
         started = time.monotonic()
-        if env.processing_mode == "images_only":
-            if (task.get("draft_meta") or {}).get("quick"):
-                await self.quick.images_only(task_id, task, env, locale, cfg)
-            else:
-                await self._process_images_only(task_id, task, env, locale, cfg)
-            return
+        # Old quick drafts also re-enter the standard image-only path on retry.
+        env.quick = env.quick or bool((task.get("draft_meta") or {}).get("quick"))
         if env.quick:
-            await self.quick.run(task_id, task, env, locale, cfg)
+            env = strip_command(env)
+            action = ACTIONS.get(env.image_action)
+            if (action is None or action.execution in ("keep", "omit") or
+                    (not env.media and not action.text_capable)):
+                await self._event(task_id, "quick", "using an information card to require an image")
+                env.image_action = ImageAction.INFO_CARD
+        if env.processing_mode == "images_only":
+            await self._process_images_only(task_id, task, env, locale, cfg)
             return
         if task["attempts"]:  # leftovers from an interrupted earlier run
             try:
@@ -181,6 +183,8 @@ class Pipeline:
             # Keep Jev's judgment and warnings; let the main evaluator inspect requested bundles or forwarded materials.
             triage = triage.model_copy(update={"route": "review", "escalated": True,
                 "use_media": bool(env.media), "reasons": [*triage.reasons, t(env.locale, "auto_bundle_evaluate")]})
+        if env.quick and triage.route == "skip":
+            triage = triage.model_copy(update={"route": "review", "escalated": True})
         await repo.save_triage(task_id, triage)
         await self._event(task_id, "triage", f"{triage.summary}; {' '.join(triage.reasons)}",
                           data=triage.model_dump())
@@ -217,7 +221,7 @@ class Pipeline:
                           f"{evaluation.reason}", data=evaluation.model_dump())
         was_suitable = evaluation.suitable
         if not was_suitable:
-            if env.is_direct or bool(env.media) or env.workflow_mode == WorkflowMode.AUTO_BUNDLE or bool(env.text.strip()):
+            if env.quick or env.is_direct or bool(env.media) or env.workflow_mode == WorkflowMode.AUTO_BUNDLE or bool(env.text.strip()):
                 # Do not discard operator submissions or media tasks.
                 # Force suitable=True so rewrite generates a draft from available facts and observations.
                 evaluation = evaluation.model_copy(update={"suitable": True})
@@ -247,7 +251,7 @@ class Pipeline:
         for img in usable[rules.max_images:]:
             await repo.update_media_decision(task_id, img.idx, ImageDecision.REVIEW.value,
                                               t(env.locale, "media_limit", count=rules.max_images))
-        outcomes = await self._process_images(
+        outcomes = await self._process_task_images(
             task_id, env, usable[: rules.max_images], analyses, rewrite, evaluation, locale, cfg,
             verified_facts=packet, max_images=rules.max_images
         )
@@ -258,6 +262,8 @@ class Pipeline:
         media_results = await self._persist(task_id, images, outcomes, analyses, cfg, locale=locale.code)
 
         problems = list(report.problems)  # blocking: cannot be approved
+        if env.quick and not any(r.asset_kind == "final" and r.ai_generated for r in media_results):
+            problems.append(t(env.locale, "quick_image_missing"))
         review = list(report.review)  # must be checked by a human, then may be approved
         if not env.is_direct and triage.route == "review":
             review.append(t(env.locale, "jev_review", reason=" ".join(triage.reasons)))
@@ -275,6 +281,8 @@ class Pipeline:
             status = (TaskStatus.DRAFT_READY if not problems and not review
                       else TaskStatus.NEEDS_REVIEW)
         meta = {
+            "quick": env.quick,
+            "image_brief": rewrite.image_brief,
             "verified_facts": packet.model_dump(mode="json"),
             "canonical_text": env.text,
             "source_analyses": {str(idx): a.model_dump(mode="json") for idx, a in analyses.items()},
@@ -601,9 +609,13 @@ class Pipeline:
                 risks=bullet(evaluation.risks), text=env.text[:6000] or t(locale.code, "empty_text"),
                 feedback=feedback,
             )
+            messages = p.messages()
+            if env.quick_instructions.strip():
+                messages[0]["content"] += "\n" + t(
+                    locale.code, "rewrite_instructions", instructions=env.quick_instructions[:2000])
             async with self.app.limits.text:
                 result = await self.app.hub.cpa.chat_json(
-                    cfg.models.text_model, p.messages(), RewriteResult,
+                    cfg.models.text_model, messages, RewriteResult,
                     temperature=cfg.models.text_temperature, json_mode=cfg.models.json_mode,
                 )
             report = check_rewrite(result, source_text=env.text, rules=rules,
@@ -670,6 +682,26 @@ class Pipeline:
                 await self.app.repo.upsert_media(task_id, outcome.idx,
                     message_id=env.message_ids[0], kind=MediaKind.GENERATED.value,
                     mime="image/png", size_bytes=None)
+
+    async def _process_task_images(self, task_id: str, env: InputEnvelope,
+                                   images: list[LoadedImage], analyses: dict[int, ImageAnalysis],
+                                   rewrite: RewriteResult, evaluation: Evaluation,
+                                   locale: Locale, cfg: AppSettings, **kwargs: Any
+                                   ) -> list[ImageOutcome]:
+        """Apply the same image pipeline, with a fact-based fallback for quick tasks."""
+        outcomes = await self._process_images(task_id, env, images, analyses, rewrite,
+                                              evaluation, locale, cfg, **kwargs)
+        if (env.quick and kwargs.get("only_indices") is None
+                and not any(o.output is not None and o.ai_generated for o in outcomes)
+                and env.image_action not in (ImageAction.INFO_CARD, ImageAction.GENERATE)):
+            await self._event(task_id, "quick", "requested image action failed; trying a verified information card",
+                              level="warning")
+            env.image_action = ImageAction.INFO_CARD
+            # A new visual uses verified facts, never unapproved edits of source pixels.
+            fallback_kwargs = {**kwargs, "only_indices": None}
+            outcomes = await self._process_images(task_id, env, [], analyses, rewrite,
+                                                  evaluation, locale, cfg, **fallback_kwargs)
+        return outcomes
 
     async def _process_images(self, task_id: str, env: InputEnvelope, images: list[LoadedImage],
                               analyses: dict[int, ImageAnalysis], rewrite: RewriteResult,
@@ -884,7 +916,8 @@ class Pipeline:
         sources = {int(idx): sanitize_analysis(ImageAnalysis.model_validate(value)) for idx, value in stored.items()}
         spec = ACTIONS.get(env.image_action)
         need_source = (spec is None or (spec.execution != "omit" and not spec.text_capable) or
-                       wants_region_edit(env.image_action, env.image_options))
+                       wants_region_edit(env.image_action, env.image_options) or
+                       (env.quick and bool(env.media) and not sources))
         images, warnings = (await self._load_media(task_id, env, cfg, use=True, only_indices=only_indices)
                             if need_source else ([], []))
         try:
@@ -892,7 +925,7 @@ class Pipeline:
             packet = VerifiedFacts.model_validate(meta.get("verified_facts") or {})
             fact_warnings = []
             if (not wants_region_edit(env.image_action, env.image_options) and
-                (spec is None or spec.execution in ("edit", "create")) and
+                (env.quick or spec is None or spec.execution in ("edit", "create")) and
                 not packet_is_traceable(packet, env.text, sources)):
                 # Fresh facts may use persisted source OCR, never old editorial background.
                 packet, fact_warnings = await self._fact_packet(task_id, env, {**sources, **analyses})
@@ -902,10 +935,10 @@ class Pipeline:
                 rules_dict["max_chars"] = cfg.pipeline.max_post_chars
             rules = XRules.from_db(rules_dict)
             rewrite = RewriteResult(post=task["draft_text"], hook=meta.get("hook") or "",
-                                    image_brief="")
+                                    image_brief=meta.get("image_brief") or "")
             execution_analyses = (analyses if wants_region_edit(env.image_action, env.image_options)
                                  else {**sources, **analyses})
-            outcomes = await self._process_images(task_id, env, images[:rules.max_images], execution_analyses,
+            outcomes = await self._process_task_images(task_id, env, images[:rules.max_images], execution_analyses,
                 rewrite, Evaluation(suitable=True, value_score=0), locale, cfg,
                 verified_facts=packet, max_images=rules.max_images, only_indices=only_indices)
             # Only replace assets after execution/QC; reference counting and R2 policy stay intact.
@@ -936,6 +969,16 @@ class Pipeline:
                 image_locale=env.image_options.target_locale or env.locale, review=review,
                 text_review=text_review, warnings=list(meta.get("text_warnings", meta.get("warnings") or []))
                 + warnings + fact_warnings, media=merged_media)
+            if env.quick:
+                meta["quick"] = True
+                meta.pop("image_prompt", None)  # obsolete free-form prompt from legacy quick drafts
+                meta.pop("alt_text", None)
+                # Clear only this workflow's missing-image blocker after a successful retry.
+                missing = t(env.locale, "quick_image_missing")
+                problems = [p for p in meta.get("problems", []) if p != missing]
+                if not any(r.get("asset_kind") == "final" and r.get("ai_generated") for r in merged_media):
+                    problems.append(missing)
+                meta["problems"] = problems
             status = TaskStatus.NEEDS_REVIEW if review or meta.get("problems") else TaskStatus.DRAFT_READY
             if not await self._save_result(task_id, status, task["draft_text"], meta):
                 return
