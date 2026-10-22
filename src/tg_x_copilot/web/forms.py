@@ -11,7 +11,7 @@ from ..image_settings import (
 
 # Actions offered on the web. "" = automatic (rights-aware policy decides per image).
 WEB_ACTIONS = [ImageAction.KEEP, ImageAction.ENHANCE, ImageAction.LOCALIZE, ImageAction.RECREATE,
-               ImageAction.CLEAN_RECREATE, ImageAction.INFO_CARD, ImageAction.GENERATE,
+               ImageAction.CLEAN_RECREATE, ImageAction.INFO_CARD, ImageAction.MOBILE_TEXT, ImageAction.GENERATE,
                ImageAction.TEXT_ONLY]
 
 
@@ -30,7 +30,12 @@ def preferences_from_form(form: Any, *, authorized_media: bool) -> ImagePreferen
         information_density=InformationDensity(str(form.get("density") or "medium")),
         target_locale=target,
     )
-    mode = WorkflowMode.QUICK if form.get("mode") == "quick" else WorkflowMode.MANUAL
+    mode = {"quick": WorkflowMode.QUICK, "mobile_text": WorkflowMode.MOBILE_TEXT}.get(
+        str(form.get("mode")), WorkflowMode.MANUAL)
+    if mode == WorkflowMode.MOBILE_TEXT:
+        action = ImageAction.MOBILE_TEXT
+    if action == ImageAction.MOBILE_TEXT:
+        options = options.model_copy(update={"information_density": InformationDensity.HIGH})
     return ImagePreferences(workflow_mode=mode, authorized_media=authorized_media,
                             image_action=action, image_options=options)
 
@@ -47,5 +52,8 @@ def form_context(ctx: Any, prefs: ImagePreferences) -> dict[str, Any]:
         "fetch_enabled": ctx.config.current.web.fetch_urls,
         "fetch_ai_available": bool(ctx.config.current.web.fetch_llm_model)
                               and "llm" in ctx.config.current.web.fetch_strategies,
-        "quick_mode": prefs.workflow_mode == WorkflowMode.QUICK,
+        "quick_mode": prefs.workflow_mode in (WorkflowMode.QUICK, WorkflowMode.MOBILE_TEXT)
+                      or prefs.image_action == ImageAction.MOBILE_TEXT,
+        "mobile_text_mode": prefs.workflow_mode == WorkflowMode.MOBILE_TEXT
+                            or prefs.image_action == ImageAction.MOBILE_TEXT,
     }

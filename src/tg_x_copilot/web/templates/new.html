@@ -2,7 +2,7 @@
 {% block title %}{{ t('web_new_title') }}{% endblock %}
 {% block content %}
 <style>
-  .modes { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+  .modes { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:14px; }
   .modes label { display:flex; gap:8px; align-items:flex-start; border:1px solid var(--line); border-radius:8px; padding:10px; cursor:pointer; }
   .modes label:has(input:checked) { border-color:var(--accent); box-shadow:0 0 0 1px var(--accent) inset; }
   #compose.quick [data-only="standard"], #compose:not(.quick) [data-only="quick"] { display:none; }
@@ -15,8 +15,10 @@
   <p class="hint">{{ t('web_new_intro') }}</p>
 
   <div class="modes" role="radiogroup" aria-label="{{ t('web_mode') }}">
-    <label><input type="radio" name="mode" value="quick" {% if quick_mode %}checked{% endif %}>
+    <label><input type="radio" name="mode" value="quick" {% if quick_mode and not mobile_text_mode %}checked{% endif %}>
       <span><b>⚡ {{ t('web_mode_quick') }}</b><br><span class="hint">{{ t('web_mode_quick_hint') }}</span></span></label>
+    <label><input type="radio" name="mode" value="mobile_text" {% if mobile_text_mode %}checked{% endif %}>
+      <span><b>▤ {{ t('mobile_text_mode') }}</b><br><span class="hint">{{ t('mobile_text_hint') }}</span></span></label>
     <label><input type="radio" name="mode" value="standard" {% if not quick_mode %}checked{% endif %}>
       <span><b>{{ t('web_mode_standard') }}</b><br><span class="hint">{{ t('web_mode_standard_hint') }}</span></span></label>
   </div>
@@ -83,7 +85,14 @@
 (() => {
   const form = document.getElementById('compose');
   form.querySelectorAll('input[name=mode]').forEach((r) => r.addEventListener('change', () => {
-    form.classList.toggle('quick', form.querySelector('input[name=mode]:checked').value === 'quick');
+    const mode = form.querySelector('input[name=mode]:checked').value;
+    form.classList.toggle('quick', mode !== 'standard');
+    if (mode === 'mobile_text') {
+      document.getElementById('image_action').value = 'mobile_text';
+      document.getElementById('density').value = 'high';
+    } else if (document.getElementById('image_action').value === 'mobile_text') {
+      document.getElementById('image_action').value = '';
+    }
   }));
 
   const input = document.getElementById('images');

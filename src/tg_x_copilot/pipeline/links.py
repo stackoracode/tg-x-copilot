@@ -14,6 +14,9 @@ from typing import Any
 
 from ..i18n import t
 from ..models import InputEnvelope
+from ..image_settings import ImageAction
+from ..services.link_reader import LinkReader
+from .mobile_text import SOURCE_LIMIT
 from .cleaning import clean_url
 
 _URL_ONLY_LIMIT = 300  # "short" Telegram posts: own text (links removed) under this many chars
@@ -48,6 +51,8 @@ async def attach_linked_pages(task_id: str, env: InputEnvelope, app: Any,
                               event: EventFn) -> tuple[InputEnvelope, list[str], bool]:
     """Return (envelope with page messages appended, operator-facing notes, any_ai_text)."""
     reader = getattr(app, "links", None)
+    if env.image_action == ImageAction.MOBILE_TEXT and isinstance(reader, LinkReader):
+        reader = reader.with_max_chars(SOURCE_LIMIT)
     urls = links_to_read(env, app.config.current.web) if reader is not None else []
     if not urls:
         return env, [], False

@@ -43,6 +43,7 @@ class ImageDecision(StrEnum):
     RECREATE = "recreate"
     CLEAN_RECREATE = "clean_recreate"
     INFO_CARD = "info_card"
+    MOBILE_TEXT = "mobile_text"
     GENERATE = "generate"
     OMIT = "omit"
     TEXT_ONLY = "text_only"
@@ -116,6 +117,7 @@ class InputEnvelope(BaseModel):
     # Quick create: standard content settings with automatic image delivery, no review gate.
     # Kept on the envelope so regenerate / image re-runs retain this requirement.
     quick: bool = False
+    card_source_text: str = ""  # unabridged fetched source for the mobile text image
     quick_instructions: str = ""  # optional style direction, shared by both workflows
     # Read linked pages before drafting (web: compose checkbox; Telegram: web.fetch_telegram_links)
     fetch_links: bool = False

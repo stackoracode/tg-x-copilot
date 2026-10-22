@@ -25,6 +25,7 @@ import logging
 import re
 import shutil
 import time
+from copy import copy
 from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
@@ -100,11 +101,18 @@ class LinkReader:
     def __init__(self, app: Any, *, resolver: Resolver = _system_resolver) -> None:
         self.app = app
         self.resolver = resolver
+        self._max_chars: int | None = None
         self._browser_slot = asyncio.Semaphore(1)  # one Chromium at a time on a small VPS
+
+    def with_max_chars(self, max_chars: int):
+        reader = copy(self)
+        reader._max_chars = max_chars
+        return reader  # shares the browser semaphore and HTTP pool
 
     @property
     def _cfg(self):
-        return self.app.config.current.web
+        cfg = self.app.config.current.web
+        return cfg.model_copy(update={"fetch_max_chars": self._max_chars}) if self._max_chars else cfg
 
     def available(self, allow_ai: bool = True) -> list[str]:
         """Configured strategies that can run right now, in order."""
@@ -299,4 +307,4 @@ class LinkReader:
         if not result.ok or not result.text.strip():
             raise UrlFetchError("AI model could not open the page")
         return PageContent(url, " ".join(result.title.split()),
-                           result.text.strip()[: cfg.web.fetch_max_chars], method="llm")
+                           result.text.strip()[: self._cfg.fetch_max_chars], method="llm")

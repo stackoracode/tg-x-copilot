@@ -38,7 +38,7 @@ from .services.storage import AssetStore
 from .services.web_inbox import WebInbox
 from .models import InputEnvelope
 from .pipeline.media import ImageBlob
-from .image_settings import ImagePreferences, WorkflowMode, resolve_workflow, has_image_source
+from .image_settings import ImageAction, ImagePreferences, WorkflowMode, resolve_workflow, has_image_source
 
 log = logging.getLogger(__name__)
 
@@ -210,7 +210,8 @@ async def submit_envelope(app: Any, env: InputEnvelope, preferences: ImagePrefer
     env.workflow_mode = effective.workflow_mode
     env.image_action = effective.image_action
     env.image_options = effective.image_options
-    env.quick = env.quick or effective.workflow_mode == WorkflowMode.QUICK
+    env.quick = env.quick or effective.workflow_mode in (WorkflowMode.QUICK, WorkflowMode.MOBILE_TEXT)
+    env.quick = env.quick or effective.image_action == ImageAction.MOBILE_TEXT
     if not env.text and not env.media:
         return None
     task_id = await app.repo.create_task(env, task_id=task_id)

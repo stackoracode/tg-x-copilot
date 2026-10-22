@@ -17,6 +17,7 @@ from ..image_settings import (
     ImagePreferences,
     InformationDensity,
     WorkflowMode,
+    resolve_workflow,
 )
 
 from ..pipeline.image_policy import needs_edit_confirmation
@@ -32,6 +33,8 @@ def payload(scope: str, command: str, value: str = "") -> bytes:
 
 
 def keyboard(scope: str, prefs: ImagePreferences, tr, page: str = "main"):
+    if prefs.workflow_mode == WorkflowMode.MOBILE_TEXT:
+        prefs = resolve_workflow(prefs, has_images=True)
     def button(key, command, value="", selected=False):
         return Button.inline(
             ("☑ " if selected else "☐ ") + tr(key), payload(scope, command, value)
@@ -97,6 +100,9 @@ def keyboard(scope: str, prefs: ImagePreferences, tr, page: str = "main"):
                 [button("image_tools_auto_bundle", "w",
                         "manual" if prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE else "auto_bundle",
                         prefs.workflow_mode == WorkflowMode.AUTO_BUNDLE)],
+                [button("mobile_text_mode", "w",
+                        "manual" if prefs.workflow_mode == WorkflowMode.MOBILE_TEXT else "mobile_text",
+                        prefs.workflow_mode == WorkflowMode.MOBILE_TEXT)],
                 [button("image_tools_auto", "a", "auto", prefs.image_action is None)]]
         choices = [
             button(
@@ -178,6 +184,8 @@ class ImageTools:
         service = app.image_preferences
         if command == "run":
             prefs = await service.get(event.sender_id)
+            if prefs.workflow_mode == WorkflowMode.MOBILE_TEXT:
+                prefs = resolve_workflow(prefs, has_images=True)
             manual = prefs.model_copy(update={"workflow_mode": WorkflowMode.MANUAL})
             ok, message = await app.ops.rerun_images(scope, event.sender_id, manual)
             await event.respond(message)
@@ -255,6 +263,8 @@ class ImageTools:
             text += "\n" + tr("image_tools_auto_bundle_help")
         elif prefs.workflow_mode == WorkflowMode.QUICK:
             text += "\n" + tr("image_tools_quick_help")
+        elif prefs.workflow_mode == WorkflowMode.MOBILE_TEXT:
+            text += "\n" + tr("mobile_text_hint")
         if (prefs.image_action and ACTIONS[prefs.image_action].text_capable and
             {ImageOption.MINIMAL_CHANGES, ImageOption.REMOVE_OVERLAYS} & prefs.image_options.flags):
             text += "\n" + tr("image_tools_creation_priority")

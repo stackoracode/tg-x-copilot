@@ -100,7 +100,7 @@ def quick_app(app):
                                           relevance=.9, extracted_text=SOURCE),
             ImageQC: good_qc(),
         }
-        result = app.test_responses.get(schema, responses[schema])
+        result = app.test_responses[schema] if schema in app.test_responses else responses[schema]
         if isinstance(result, Exception):
             raise result
         return result

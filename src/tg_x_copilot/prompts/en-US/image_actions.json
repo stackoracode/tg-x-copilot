@@ -8,7 +8,8 @@
     "info_card": "Create a clearly non-documentary original information card with an honest factual headline/hook and visual hierarchy.",
     "generate": "Create an original X illustration/information card from the verified packet and final editorial angle, even without source images.",
     "omit": "Do not output an image.",
-    "text_only": "Deliver the existing text draft without images."
+    "text_only": "Deliver the existing text draft without images.",
+    "mobile_text": "Arrange source key points into one text-dominant 9:16 portrait image for phone readers; summarize long sources and never create multiple images."
   },
   "options": {
     "keep_brands": "Keep relevant brand names verbatim.",

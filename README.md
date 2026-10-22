@@ -243,6 +243,25 @@ publishes to X automatically.
 The local renderer uses system CJK fonts (Noto Sans CJK or WenQuanYi on Linux). The deployment
 has these fonts installed. Both modes keep their source audit information and storage budgets.
 
+## One mobile text image
+
+Choose **Mobile text image** on `/new`, or enable it in Telegram `/images` (Image Tools).
+This is a separate automatic mode: it keeps the normal post-writing rules and returns
+**exactly one** text-dominant image. The output itself is 1440×2560 (9:16), with fixed,
+phone-readable font sizes. It is not a change to the website viewport.
+
+The text model selects the highest-value conclusions, numbers, comparisons and qualifications
+from the source, then Pillow typesets actual text into a clean portrait layout. Excess content
+is reduced to key points; it never produces extra pages or keeps shrinking the font. Source
+links can supply up to 120,000 readable characters in this mode, independently of the normal
+reader limit. The full captured source is retained for image-only reruns. If outlining fails,
+the finished post and source key sentences provide an automatic fallback. Image content may
+be shorter than the source by design. No image-generation model has to draw the lettering.
+
+Web results expose the full-resolution PNG. Telegram sends this mode as **one original PNG
+file**, avoiding photo recompression and preserving sharp text. It does not send a second
+photo copy. Other modes retain their existing image formats and delivery behavior.
+
 ## Reading links
 
 Linked pages are read by the worker for **both channels**: web submissions when *Read the

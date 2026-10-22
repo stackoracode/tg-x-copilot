@@ -16,6 +16,7 @@ class ImageAction(StrEnum):
     RECREATE = "recreate"
     CLEAN_RECREATE = "clean_recreate"
     INFO_CARD = "info_card"
+    MOBILE_TEXT = "mobile_text"
     GENERATE = "generate"
     OMIT = "omit"
     TEXT_ONLY = "text_only"
@@ -47,7 +48,8 @@ class ImageOption(StrEnum):
 class WorkflowMode(StrEnum):
     MANUAL = "manual"
     AUTO_BUNDLE = "auto_bundle"
-    QUICK = "quick"  # standard editorial/image pipeline, with a required generated image
+    QUICK = "quick"  # automatic standard text and image delivery
+    MOBILE_TEXT = "mobile_text"  # one text-dominant 9:16 image for phone readers
 
 
 class InformationDensity(StrEnum):
@@ -70,6 +72,7 @@ ACTIONS: dict[ImageAction, ActionSpec] = {
     ImageAction.RECREATE: ActionSpec("create", "regenerate"),
     ImageAction.CLEAN_RECREATE: ActionSpec("create", "regenerate"),
     ImageAction.INFO_CARD: ActionSpec("create", "regenerate", True),
+    ImageAction.MOBILE_TEXT: ActionSpec("create", "regenerate", True),
     ImageAction.GENERATE: ActionSpec("create", "regenerate", True),
     ImageAction.OMIT: ActionSpec("omit"),
     ImageAction.TEXT_ONLY: ActionSpec("omit"),
@@ -138,6 +141,7 @@ PRESETS: dict[ImageAction, frozenset[ImageOption]] = {
     ImageAction.CLEAN_RECREATE: DEFAULT_OPTIONS
     | {ImageOption.REMOVE_OVERLAYS, ImageOption.REDESIGN},
     ImageAction.INFO_CARD: DEFAULT_OPTIONS | {ImageOption.REDESIGN},
+    ImageAction.MOBILE_TEXT: DEFAULT_OPTIONS | {ImageOption.REDESIGN},
     ImageAction.ENHANCE: DEFAULT_OPTIONS
     | {ImageOption.MINIMAL_CHANGES, ImageOption.VISUAL_PRIORITY},
     ImageAction.GENERATE: DEFAULT_OPTIONS | {ImageOption.REDESIGN},
@@ -152,6 +156,12 @@ def has_image_source(media) -> bool:
 
 def resolve_workflow(preferences: ImagePreferences, *, has_images: bool) -> ImagePreferences:
     """Automatic mode creates originals; it never asserts rights to edit source pixels."""
+    if preferences.workflow_mode == WorkflowMode.MOBILE_TEXT:
+        return preferences.model_copy(update={
+            "image_action": ImageAction.MOBILE_TEXT,
+            "image_options": preferences.image_options.model_copy(
+                update={"information_density": InformationDensity.HIGH}),
+        })
     if preferences.workflow_mode != WorkflowMode.AUTO_BUNDLE:
         return preferences.model_copy(deep=True)
     options = preferences.image_options

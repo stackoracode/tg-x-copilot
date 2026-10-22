@@ -2,7 +2,7 @@
 {% block title %}{{ t('admin_Task') }} {{ task.id[:8] }}{% endblock %}
 {% block content %}
 <div class="card">
-  <h2 style="margin-top:0">{{ t('admin_Task') }} <code>{{ task.id }}</code> <span class="pill s-{{ task.status }}">{{ label(task.status) }}</span>{% if task.envelope.quick %} <span class="pill">⚡ {{ t('web_mode_quick') }}</span>{% endif %}</h2>
+  <h2 style="margin-top:0">{{ t('admin_Task') }} <code>{{ task.id }}</code> <span class="pill s-{{ task.status }}">{{ label(task.status) }}</span>{% if task.envelope.image_action == 'mobile_text' or (task.draft_meta or {}).mobile_card %} <span class="pill">▤ {{ t('mobile_text_mode') }}</span>{% elif task.envelope.quick %} <span class="pill">⚡ {{ t('web_mode_quick') }}</span>{% endif %}</h2>
   <p class="muted">{{ t('admin_stage') }} {{ a(task.stage or "-") }} · {{ t('admin_attempts') }} {{ task.attempts }} · {{ t('admin_score') }} {{ task.score }} · {{ t('admin_route') }} {{ label(task.route or "-") }} · {{ task.locale }}/{{ task.market }} · {{ t('admin_created') }} {{ task.created_at }}</p>
   {% if task.locale != locale %}<p class="muted">{{ t('admin_Locale mismatch') }}</p>{% endif %}
   {% if task.error %}<pre class="bad">{{ t("task_failure") }}</pre>{% endif %}

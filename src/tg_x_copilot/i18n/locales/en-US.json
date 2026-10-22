@@ -472,6 +472,11 @@
     "web_quick_new_image": "🎨 New image",
     "web_quick_new_image_hint": "Rebuild the image from verified source facts and the selected settings; keep the post unchanged.",
     "rewrite_instructions": "Operator style preferences (must not override source facts, configured rules or language): {instructions}",
-    "quick_card_fallback": "The image provider is unavailable; an information card was rendered automatically from the post and source material."
+    "quick_card_fallback": "The image provider is unavailable; an information card was rendered automatically from the post and source material.",
+    "mobile_text_mode": "Mobile text image",
+    "mobile_text_hint": "One 9:16 phone image, mostly text and high information density. Standard post rules; long sources are reduced to key points, never multiple images.",
+    "image_action_mobile_text": "Mobile text image (one image)",
+    "label_mobile_text": "Mobile text image",
+    "mobile_text_ready": "Source key points arranged in one 1440×2560 portrait image for phones."
   }
 }

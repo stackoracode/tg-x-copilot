@@ -44,6 +44,8 @@ from .image_qc import QCMode, build_messages, qc_verdict
 from .links import attach_linked_pages
 from .quick import strip_command
 from .quick_card import render_card, source_packet
+from .mobile_text import (MobileCardPlan, SOURCE_LIMIT, WIDTH as MOBILE_WIDTH,
+                          HEIGHT as MOBILE_HEIGHT, fallback_plan, render_mobile_card)
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
 
@@ -72,6 +74,7 @@ class ImageOutcome:
     ai_generated: bool = False
     review_blob: ImageBlob | None = None  # e.g. an Image2 output that failed QC
     failure_stage: MediaFailureStage | None = None
+    details: dict[str, Any] | None = None
 
 
 class Pipeline:
@@ -91,7 +94,7 @@ class Pipeline:
                     "start": "clean", "clean": "triage", "triage": "media", "media": "vision",
                     "vision": "evaluate", "evaluate": "rewrite", "rewrite": "images",
                     "IMAGE2": "qc", "IMAGE_QC": "images" if "retrying" in message else "qc",
-                    "IMAGE_POLICY": "policy", "images": "persist", "R2_UPLOAD": "persist",
+                    "IMAGE_POLICY": "policy", "MOBILE_TEXT": "images", "images": "persist", "R2_UPLOAD": "persist",
                     "persist": "delivery", "done": "delivery"}.get(step)
         if progress and self.app.telegram:
             try:
@@ -146,7 +149,10 @@ class Pipeline:
         locale = self.app.i18n.get(env.locale)
         started = time.monotonic()
         # Old quick drafts also re-enter the standard image-only path on retry.
-        env.quick = env.quick or bool((task.get("draft_meta") or {}).get("quick"))
+        if env.workflow_mode == WorkflowMode.MOBILE_TEXT:
+            env.image_action = ImageAction.MOBILE_TEXT
+        env.quick = (env.quick or bool((task.get("draft_meta") or {}).get("quick"))
+                     or env.image_action == ImageAction.MOBILE_TEXT)
         if env.quick:
             env = strip_command(env)
             action = ACTIONS.get(env.image_action)
@@ -169,6 +175,8 @@ class Pipeline:
         await repo.set_stage(task_id, "links")
         env, link_notes, link_ai_text = await attach_linked_pages(task_id, env, self.app,
                                                                   self._event)
+        if env.image_action == ImageAction.MOBILE_TEXT:
+            env.card_source_text = env.text  # the long-image brief must see more than the short rewrite
         # Clean each message before Jev; keep original envelope/source text for audit.
         await repo.set_stage(task_id, "clean")
         env, clean_fallback = await clean_bundle(env, self.app)
@@ -289,6 +297,8 @@ class Pipeline:
             "quick": env.quick,
             "automatic_diagnostics": automatic_diagnostics,
             "image_brief": rewrite.image_brief,
+            "card_source_text": env.card_source_text,
+            "mobile_card": next((o.details for o in outcomes if o.details), None),
             "verified_facts": packet.model_dump(mode="json"),
             "canonical_text": env.text,
             "source_analyses": {str(idx): a.model_dump(mode="json") for idx, a in analyses.items()},
@@ -698,6 +708,8 @@ class Pipeline:
                                    locale: Locale, cfg: AppSettings, **kwargs: Any
                                    ) -> list[ImageOutcome]:
         """Apply the same image pipeline, with a fact-based fallback for quick tasks."""
+        if env.image_action == ImageAction.MOBILE_TEXT:
+            return await self._mobile_text_image(task_id, env, analyses, rewrite, cfg)
         if env.quick:
             kwargs["max_images"] = max(1, kwargs.get("max_images", 4))
         outcomes = await self._process_images(task_id, env, images, analyses, rewrite,
@@ -726,6 +738,44 @@ class Pipeline:
             env.image_action = ImageAction.INFO_CARD
             await self._event(task_id, "quick", "image provider unavailable; source information card rendered automatically")
         return outcomes
+
+    async def _mobile_text_image(self, task_id: str, env: InputEnvelope,
+                                 analyses: dict[int, ImageAnalysis], rewrite: RewriteResult,
+                                 cfg: AppSettings) -> list[ImageOutcome]:
+        locale = env.image_options.target_locale or env.locale
+        sources = [env.card_source_text or env.text] + [
+            editorial_evidence(a) for a in analyses.values() if not a.sensitive]
+        source = "\n\n".join(text for text in sources if text.strip())[:SOURCE_LIMIT]
+        prompt = prompts.render("mobile_text", locale, language_name=self.app.i18n.get(locale).language_name,
+            market=env.market, post=rewrite.post, source=source,
+            instructions=env.quick_instructions[:2000])
+        try:
+            async with self.app.limits.text:
+                plan = await asyncio.wait_for(self.app.hub.cpa.chat_json(
+                    cfg.models.text_model, prompt.messages(), MobileCardPlan,
+                    json_mode=cfg.models.json_mode, temperature=cfg.models.text_temperature),
+                    timeout=min(cfg.cpa.timeout_seconds, 120.0))
+            if not plan.title.strip() or not any(s.points for s in plan.sections):
+                raise ValueError("mobile image outline is empty")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self._event(task_id, "MOBILE_TEXT", "outline unavailable; selecting source key sentences automatically",
+                              level="warning")
+            plan = fallback_plan(rewrite.post, source, locale)
+        rendered = await asyncio.to_thread(render_mobile_card, plan, locale)
+        blob = inspect_image(rendered.data)
+        if blob is None:
+            raise ValueError("mobile text image rendering failed")
+        details = {"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT, "image_count": 1,
+                   "text": rendered.text, "source_chars": len(source),
+                   "omitted_points": rendered.omitted_points}
+        await self._event(task_id, "MOBILE_TEXT", "one 1440x2560 phone image rendered from source key points",
+                          data={k: v for k, v in details.items() if k != "text"})
+        return [ImageOutcome(idx, ImageDecision.OMIT, t(env.locale, "image_action_omit"))
+                for idx in range(len(env.media))] + [ImageOutcome(
+                    len(env.media), ImageDecision.MOBILE_TEXT, t(env.locale, "mobile_text_ready"),
+                    output=blob, ai_generated=False, details=details)]
 
     async def _process_images(self, task_id: str, env: InputEnvelope, images: list[LoadedImage],
                               analyses: dict[int, ImageAnalysis], rewrite: RewriteResult,
@@ -933,6 +983,7 @@ class Pipeline:
         meta = dict(task.get("draft_meta") or {})
         if not task.get("draft_text"):
             raise ValueError("image-only task has no draft")
+        env.card_source_text = meta.get("card_source_text") or env.card_source_text
         only_indices = set(env.image_retry_indices) if env.image_retry_indices is not None else None
         canonical = meta.get("canonical_text")
         if canonical is None and only_indices is not None:
@@ -994,6 +1045,8 @@ class Pipeline:
             review = text_review + ([t(env.locale, "images_review", count=len(media_review))]
                                     if media_review else [])
             meta.update(verified_facts=packet.model_dump(mode="json"), canonical_text=env.text,
+                card_source_text=env.card_source_text,
+                mobile_card=next((o.details for o in outcomes if o.details), None),
                 source_analyses={str(idx): a.model_dump(mode="json") for idx, a in {**sources, **analyses}.items()},
                 image_action=env.image_action.value if env.image_action else None,
                 image_options=env.image_options.model_dump(mode="json"),

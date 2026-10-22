@@ -472,6 +472,11 @@
     "web_quick_new_image": "🎨 重新生图",
     "web_quick_new_image_hint": "按核实后的来源事实和所选图片设置重新生图，保留现有文案。",
     "rewrite_instructions": "运营者风格偏好（不得覆盖来源事实、配置规则与目标语言）：{instructions}",
-    "quick_card_fallback": "生图服务暂不可用，已根据文案与来源信息自动制作信息卡。"
+    "quick_card_fallback": "生图服务暂不可用，已根据文案与来源信息自动制作信息卡。",
+    "mobile_text_mode": "手机文字信息图",
+    "mobile_text_hint": "一张 9:16 手机竖图，文字为主、高信息密度。沿用原文案规则；长文自动保留重点，不拆成多张。",
+    "image_action_mobile_text": "手机文字信息图（单张）",
+    "label_mobile_text": "手机文字信息图",
+    "mobile_text_ready": "已整理来源重点并生成一张 1440×2560 手机竖版信息图。"
   }
 }

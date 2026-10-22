@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 _MAX_MSG = 4000
-_DECISION_ICON = {"generate": "🎨", "info_card": "📊", "clean_recreate": "🧹", "omit": "⏭", "text_only": "📄", "keep": "✅", "enhance": "✨", "regenerate": "🎨", "localize": "🌐", "recreate": "🎨", "review": "👀"}
+_DECISION_ICON = {"generate": "🎨", "info_card": "📊", "mobile_text": "▤", "clean_recreate": "🧹", "omit": "⏭", "text_only": "📄", "keep": "✅", "enhance": "✨", "regenerate": "🎨", "localize": "🌐", "recreate": "🎨", "review": "👀"}
 
 
 def esc(value: Any) -> str:
@@ -280,6 +280,7 @@ class TelegramBot:
 
         draft = task.get("draft_text") or ""
         caption_fits = len(draft.encode("utf-16-le")) // 2 <= 1024
+        original_png = bool(meta.get("mobile_card"))
         caption_sent = False
         anchor_id = None
         for offset in range(0, len(files), 10):
@@ -290,7 +291,7 @@ class TelegramBot:
                 caption = draft if caption_fits and not caption_sent else ""
                 file_arg = batch[0][1] if len(batch) == 1 else [bio for _, bio in batch]
                 caption_arg = caption if len(batch) == 1 else [caption] + [""] * (len(batch)-1)
-                kwargs = {"caption": caption_arg, "parse_mode": None, "force_document": False}
+                kwargs = {"caption": caption_arg, "parse_mode": None, "force_document": original_png}
                 if source_reply is not None:
                     kwargs["reply_to"] = source_reply
                 if len(files) == 1:
@@ -303,7 +304,8 @@ class TelegramBot:
                 messages = sent if isinstance(sent, (list, tuple)) else [sent]
                 for pos, (idx, _) in enumerate(batch):
                     message = messages[pos] if pos < len(messages) else None
-                    if message is None or getattr(message, "photo", None) is None:
+                    if message is None or not (getattr(message, "photo", None) is not None or
+                            (original_png and getattr(message, "document", None) is not None)):
                         fail(idx, MediaFailureStage.TELEGRAM_SEND, tr("media_stage_send"))
                     else:
                         message_id = getattr(message, "id", None)
@@ -359,7 +361,9 @@ class TelegramBot:
                 lines.append(f"📊 评估: 价值 {val_str}" + (f"（{esc(ev.get('angle'))}）" if ev.get("angle") else ""))
             else:
                 lines.append(f"📊 Evaluation: value {val_str}" + (f" ({esc(ev.get('angle'))})" if ev.get("angle") else ""))
-        if meta.get("quick"):
+        if meta.get("mobile_card"):
+            lines.append(tr("mobile_text_ready"))
+        elif meta.get("quick"):
             lines.append(tr("quick_badge"))
         for w in meta.get("warnings") or []:
             lines.append(f"⚠️ {esc(w)}")
