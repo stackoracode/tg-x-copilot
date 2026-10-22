@@ -75,6 +75,18 @@ class ModelSettings(BaseModel):
     text_temperature: float | None = None
 
 
+class MobileTextSettings(BaseModel):
+    engine: Literal["model", "typeset"] = "model"
+    style: Literal["whiteboard", "clean", "custom"] = "whiteboard"
+    style_instructions: str = Field(default="", max_length=4000)
+    # Independent of standard image_size: this mode always targets a phone portrait.
+    image_size: Literal["1440x2560", "1152x2048", "1080x1920"] = "1440x2560"
+    fallback_to_typeset: bool = True
+    source_max_chars: int = Field(default=120000, ge=2000, le=200000)
+    content_max_chars: int = Field(default=750, ge=200, le=1800)
+    max_sections: int = Field(default=6, ge=1, le=10)
+
+
 class R2Settings(BaseModel):
     account_id: str = ""
     access_key_id: SecretStr = SecretStr("")
@@ -139,9 +151,12 @@ class ConcurrencySettings(BaseModel):
 
 
 class PipelineSettings(BaseModel):
+    quick_image_attempts: int = Field(default=3, ge=1, le=5)
+    quick_image_timeout_seconds: float = Field(default=180, ge=30, le=600)
+    automatic_upload_attempts: int = Field(default=3, ge=1, le=5)
     max_rewrite_attempts: int = 3
     max_media_bytes: int = 20 * 1024 * 1024
-    task_timeout_seconds: float = 900.0
+    task_timeout_seconds: float = Field(default=900.0, ge=60, le=3600)
     max_post_chars: int = 280  # standard: 280, X Premium: up to 25,000
     # Telegram chat IDs (e.g. -100123...) whose media the operator owns the rights to.
     # Only media from these sources may be kept or enhanced; everything else is
@@ -164,8 +179,8 @@ class WebSettings(BaseModel):
     # Fetch readable text for submitted URLs (SSRF-guarded: public http/https hosts only).
     fetch_urls: bool = True
     fetch_timeout_seconds: float = 15.0
-    fetch_max_bytes: int = 2 * 1024 * 1024
-    fetch_max_chars: int = 20000
+    fetch_max_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
+    fetch_max_chars: int = Field(default=20000, ge=1000, le=200000)
     # Links in Telegram messages: "short" = only when the post itself is little more than the
     # link (its own text < 300 chars), "always", or "off".
     fetch_telegram_links: Literal["off", "short", "always"] = "short"
@@ -181,7 +196,7 @@ class WebSettings(BaseModel):
     # Headless browser (needs `pip install playwright`). Empty path = Playwright's own
     # Chromium, else the first Chrome/Chromium on PATH. Env-only: it names an executable.
     fetch_browser_path: str = ""
-    fetch_browser_timeout_seconds: float = 30.0
+    fetch_browser_timeout_seconds: float = Field(default=30.0, ge=5, le=180)
     # Model with web access behind the CPA proxy (e.g. a search/browsing model). Empty = off.
     # Its text is marked "AI-retrieved" because it cannot be verified against the page.
     fetch_llm_model: str = ""
@@ -212,6 +227,7 @@ class AppSettings(BaseSettings):
     cpa: OpenAICompatSettings = Field(default_factory=OpenAICompatSettings)
     jev: JevSettings = Field(default_factory=JevSettings)
     models: ModelSettings = Field(default_factory=ModelSettings)
+    mobile_text: MobileTextSettings = Field(default_factory=MobileTextSettings)
     r2: R2Settings = Field(default_factory=R2Settings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     db: DBSettings = Field(default_factory=DBSettings)
@@ -241,6 +257,21 @@ EDITABLE_KEYS: frozenset[str] = frozenset({
     "jev.media_useful_min",
     "models.text_model",
     "models.vision_model",
+    "mobile_text.engine",
+    "mobile_text.style",
+    "mobile_text.style_instructions",
+    "mobile_text.image_size",
+    "mobile_text.fallback_to_typeset",
+    "mobile_text.source_max_chars",
+    "mobile_text.content_max_chars",
+    "mobile_text.max_sections",
+    "pipeline.quick_image_attempts",
+    "pipeline.quick_image_timeout_seconds",
+    "pipeline.automatic_upload_attempts",
+    "pipeline.task_timeout_seconds",
+    "web.fetch_max_chars",
+    "web.fetch_max_bytes",
+    "web.fetch_browser_timeout_seconds",
     "models.image_model",
     "models.image_size",
     "models.image_edit_mode",

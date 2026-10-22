@@ -477,6 +477,27 @@
     "mobile_text_hint": "One 9:16 phone image, mostly text and high information density. Standard post rules; long sources are reduced to key points, never multiple images.",
     "image_action_mobile_text": "Mobile text image (one image)",
     "label_mobile_text": "Mobile text image",
-    "mobile_text_ready": "Source key points arranged in one 1440×2560 portrait image for phones."
+    "mobile_text_ready": "Source key points arranged in one 9:16 portrait image for phones.",
+    "setting_models.image_model": "Image model shared by standard, quick and mobile generation.",
+    "setting_mobile_text.engine": "Model generation by default; typeset keeps the original precise text layout.",
+    "setting_mobile_text.style": "Visual style for model-generated mobile images.",
+    "setting_mobile_text.style_instructions": "Extra visual instructions; applied to all model styles.",
+    "setting_mobile_text.image_size": "One 9:16 phone portrait. Separate from standard image size.",
+    "setting_mobile_text.fallback_to_typeset": "Automatically deliver a typeset image if all image-model attempts fail.",
+    "setting_mobile_text.source_max_chars": "Maximum source characters for mobile reading and outlining.",
+    "setting_mobile_text.content_max_chars": "Maximum displayed characters; retain complete high-priority points.",
+    "setting_mobile_text.max_sections": "Maximum sections on the single mobile image.",
+    "setting_pipeline.quick_image_attempts": "Automatic generation attempts for quick and mobile modes.",
+    "setting_pipeline.quick_image_timeout_seconds": "Timeout per image attempt in seconds, excluding queue wait.",
+    "setting_pipeline.automatic_upload_attempts": "Automatic image upload attempts.",
+    "setting_pipeline.task_timeout_seconds": "Total task timeout in seconds, including reading, text and image generation.",
+    "setting_web.fetch_max_chars": "Maximum page characters in standard and quick modes.",
+    "setting_web.fetch_max_bytes": "Maximum page response size in bytes.",
+    "setting_web.fetch_browser_timeout_seconds": "Browser fetch timeout in seconds.",
+    "setting_choice_model": "Image model",
+    "setting_choice_typeset": "Local typesetting",
+    "setting_choice_whiteboard": "Whiteboard hand-drawn",
+    "setting_choice_clean": "Clean typography",
+    "setting_choice_custom": "Custom style"
   }
 }

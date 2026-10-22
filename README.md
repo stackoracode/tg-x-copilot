@@ -247,16 +247,31 @@ has these fonts installed. Both modes keep their source audit information and st
 
 Choose **Mobile text image** on `/new`, or enable it in Telegram `/images` (Image Tools).
 This is a separate automatic mode: it keeps the normal post-writing rules and returns
-**exactly one** text-dominant image. The output itself is 1440×2560 (9:16), with fixed,
-phone-readable font sizes. It is not a change to the website viewport.
+**exactly one** text-dominant 9:16 phone portrait (1440×2560 by default).
 
-The text model selects the highest-value conclusions, numbers, comparisons and qualifications
-from the source, then Pillow typesets actual text into a clean portrait layout. Excess content
-is reduced to key points; it never produces extra pages or keeps shrinking the font. Source
-links can supply up to 120,000 readable characters in this mode, independently of the normal
-reader limit. The full captured source is retained for image-only reruns. If outlining fails,
-the finished post and source key sentences provide an automatic fallback. Image content may
-be shorter than the source by design. No image-generation model has to draw the lettering.
+The text model selects source conclusions, numbers, comparisons and qualifications, then
+`models.image_model` generates the image. It uses the same configured image model as standard
+and quick creation. The default style is **whiteboard hand-drawn**, with text occupying most
+of the image, restrained marker highlights and only helpful small icons. Excess content is
+reduced to complete key points, never extra pages.
+
+On **Settings**, edit `mobile_text.*` to choose model generation or the original Pillow
+**local typesetting**, whiteboard/clean/custom style, extra style instructions, a 9:16 resolution,
+source budget (default 120,000 characters), displayed character budget (750) and section limit
+(6). Changes apply immediately to both web and Telegram. `models.image_size` continues to
+control standard images; `mobile_text.image_size` controls this phone mode.
+
+If outlining fails, source key sentences are selected automatically. If model image generation
+fails after the configured attempts, local typesetting delivers one image automatically when
+`mobile_text.fallback_to_typeset` is enabled (the default). Task metadata records the actual
+engine, model, style and whether fallback was used. Model lettering can differ from the
+requested text; choose local typesetting when exact lettering is essential. The full captured
+source is retained for image-only reruns.
+
+`pipeline.quick_image_attempts`, `pipeline.quick_image_timeout_seconds` and
+`pipeline.automatic_upload_attempts` control automatic retry budgets in Settings. Keep the
+total `pipeline.task_timeout_seconds` large enough for reading, rewriting and image attempts.
+The normal reader's character/byte limits and browser timeout are also editable there.
 
 Web results expose the full-resolution PNG. Telegram sends this mode as **one original PNG
 file**, avoiding photo recompression and preserving sharp text. It does not send a second

@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from .quick_card import _font
 
 WIDTH, HEIGHT = 1440, 2560
-SOURCE_LIMIT = 120000
 
 
 class CardSection(BaseModel):
@@ -49,6 +48,41 @@ def fallback_plan(post: str, source: str, locale: str) -> MobileCardPlan:
     return MobileCardPlan(title="重点信息" if locale == "zh-CN" else "KEY INFORMATION",
         intro=post, sections=[CardSection(title="核心要点" if locale == "zh-CN" else "KEY POINTS",
                                          points=points)])
+
+
+def constrain_plan(plan: MobileCardPlan, max_chars: int, max_sections: int) -> MobileCardPlan:
+    """Keep whole priority-ordered points; never cut numbers/qualifications midway."""
+    title = plan.title[:60]
+    intro = plan.intro if len(title) + len(plan.intro) <= max_chars // 3 else ""
+    remaining = max_chars - len(title) - len(intro)
+    sections = []
+    for section in plan.sections[:max_sections]:
+        points = []
+        available = remaining - len(section.title)
+        for point in section.points:
+            point = point.strip()
+            if point and len(point) <= available:
+                points.append(point)
+                available -= len(point)
+        if points:
+            sections.append(CardSection(title=section.title, points=points))
+            remaining = available
+    return MobileCardPlan(title=title, intro=intro, sections=sections)
+
+
+def phone_png(data: bytes, size: str) -> bytes:
+    """Fit without cropping any text; pad off-ratio provider output onto a 9:16 canvas."""
+    from PIL import ImageOps
+
+    width, height = map(int, size.split("x"))
+    with Image.open(io.BytesIO(data)) as source:
+        source.load()
+        image = ImageOps.contain(source.convert("RGB"), (width, height), Image.Resampling.LANCZOS)
+        canvas = Image.new("RGB", (width, height), "white")
+        canvas.paste(image, ((width - image.width) // 2, (height - image.height) // 2))
+        out = io.BytesIO()
+        canvas.save(out, format="PNG")
+        return out.getvalue()
 
 
 def render_mobile_card(plan: MobileCardPlan, locale: str) -> RenderedCard:

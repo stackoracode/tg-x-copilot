@@ -4,12 +4,13 @@
 <div class="card">
   <h3 style="margin-top:0">{{ t('admin_Runtime settings') }}</h3>
   <p class="muted">{{ t('admin_Saved to MySQL and applied immediately (clients are rebuilt). API keys are environment-only and cannot be edited here. "env" means the value comes from') }} <code>.env</code>.</p>
+  <p><a href="#mobile_text.engine">▤ {{ t('mobile_text_mode') }}</a> · <a href="#models.image_model">{{ t('admin_Model') }}</a></p>
   <form method="post" action="/settings">
     <table>
       <tr><th>{{ t('admin_Key') }}</th><th>{{ t('admin_Value') }}</th><th>{{ t('admin_Source') }}</th></tr>
       {% for r in rows %}
-      <tr>
-        <td><code>{{ r.key }}</code></td>
+      <tr id="{{ r.key }}">
+        <td><code>{{ r.key }}</code>{% if r.key.startswith('mobile_text.') or r.key in ['models.image_model', 'pipeline.quick_image_attempts', 'pipeline.quick_image_timeout_seconds', 'pipeline.automatic_upload_attempts', 'web.fetch_max_chars', 'web.fetch_max_bytes', 'web.fetch_browser_timeout_seconds', 'pipeline.task_timeout_seconds'] %}<div class="muted" style="max-width:440px">{{ t('setting_' ~ r.key) }}</div>{% endif %}</td>
         <td>
           {% if r.key == 'default_locale' %}
             <select name="default_locale">
@@ -19,8 +20,12 @@
           {% elif r.is_bool %}
             <input type="hidden" name="{{ r.key }}__bool" value="1">
             <input type="checkbox" name="{{ r.key }}" value="true" {% if r.value == "True" %}checked{% endif %}>
+          {% elif r.choices %}
+            <select name="{{ r.key }}">{% for choice in r.choices %}<option value="{{ choice }}" {% if r.value == choice|string %}selected{% endif %}>{{ t('setting_choice_' ~ choice) if r.key.startswith('mobile_text.') and r.key != 'mobile_text.image_size' else choice }}</option>{% endfor %}</select>
+          {% elif r.key == 'mobile_text.style_instructions' %}
+            <textarea name="{{ r.key }}" rows="3" maxlength="4000">{{ r.value }}</textarea>
           {% else %}
-            <input type="text" name="{{ r.key }}" value="{{ r.value }}" {% if r.key.startswith("models.") %}list="model-ids"{% endif %} autocomplete="off">
+            <input type="{{ 'number' if r.is_number else 'text' }}" {% if r.is_number %}step="any"{% for attr, val in r.bounds.items() %} {{ attr }}="{{ val }}"{% endfor %}{% endif %} name="{{ r.key }}" value="{{ r.value }}" {% if r.key in ['models.image_model', 'models.text_model', 'models.vision_model'] %}list="model-ids"{% endif %} autocomplete="off">
           {% endif %}
         </td>
         <td class="muted">{% if r.overridden %}{{ t('admin_db') }}{% else %}{{ t('admin_env') }}{% endif %}</td>

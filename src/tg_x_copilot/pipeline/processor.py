@@ -44,8 +44,8 @@ from .image_qc import QCMode, build_messages, qc_verdict
 from .links import attach_linked_pages
 from .quick import strip_command
 from .quick_card import render_card, source_packet
-from .mobile_text import (MobileCardPlan, SOURCE_LIMIT, WIDTH as MOBILE_WIDTH,
-                          HEIGHT as MOBILE_HEIGHT, fallback_plan, render_mobile_card)
+from .mobile_text import (MobileCardPlan, fallback_plan, render_mobile_card,
+                          constrain_plan, phone_png)
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
 
@@ -745,10 +745,11 @@ class Pipeline:
         locale = env.image_options.target_locale or env.locale
         sources = [env.card_source_text or env.text] + [
             editorial_evidence(a) for a in analyses.values() if not a.sensitive]
-        source = "\n\n".join(text for text in sources if text.strip())[:SOURCE_LIMIT]
+        source = "\n\n".join(text for text in sources if text.strip())[:cfg.mobile_text.source_max_chars]
         prompt = prompts.render("mobile_text", locale, language_name=self.app.i18n.get(locale).language_name,
             market=env.market, post=rewrite.post, source=source,
-            instructions=env.quick_instructions[:2000])
+            instructions=env.quick_instructions[:2000],
+            max_chars=cfg.mobile_text.content_max_chars, max_sections=cfg.mobile_text.max_sections)
         try:
             async with self.app.limits.text:
                 plan = await asyncio.wait_for(self.app.hub.cpa.chat_json(
@@ -763,19 +764,64 @@ class Pipeline:
             await self._event(task_id, "MOBILE_TEXT", "outline unavailable; selecting source key sentences automatically",
                               level="warning")
             plan = fallback_plan(rewrite.post, source, locale)
-        rendered = await asyncio.to_thread(render_mobile_card, plan, locale)
-        blob = inspect_image(rendered.data)
+        mobile = cfg.mobile_text
+        plan = constrain_plan(plan, mobile.content_max_chars, mobile.max_sections)
+        text = "\n".join([plan.title, plan.intro] + [
+            "\n".join([section.title, *section.points]) for section in plan.sections])
+        blob = None
+        ai_generated = False
+        used_fallback = False
+        if mobile.engine == "model":
+            style = {
+                "whiteboard": "Whiteboard hand-drawn style: white background, black marker lettering, "
+                    "hand-drawn section borders and restrained colored marker highlights. "
+                    "Small meaningful hand-drawn icons only when helpful.",
+                "clean": "Clean editorial typography on a white background, precise alignment, "
+                    "clear section hierarchy and restrained color accents.",
+                "custom": "Follow the operator's visual style while keeping text dominant and readable.",
+            }[mobile.style]
+            image_prompt = prompts.render("mobile_text_image", locale,
+                language_name=self.app.i18n.get(locale).language_name,
+                style=style, style_instructions=mobile.style_instructions,
+                text=text, size=mobile.image_size).user
+            for attempt in range(cfg.pipeline.quick_image_attempts):
+                try:
+                    async with self.app.limits.image, asyncio.timeout(cfg.pipeline.quick_image_timeout_seconds):
+                        raw = await self.app.hub.cpa.images_generate(
+                            cfg.models.image_model, image_prompt, size=mobile.image_size)
+                    if inspect_image(raw) is None:
+                        raise ValueError("image provider returned invalid image data")
+                    blob = inspect_image(await asyncio.to_thread(phone_png, raw, mobile.image_size))
+                    ai_generated = True
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    await self._event(task_id, "MOBILE_TEXT", "image generation attempt failed",
+                        level="warning", data={"model": cfg.models.image_model, "attempt": attempt + 1,
+                                               "error": mask(str(exc))[:400]})
+            if blob is None:
+                if not mobile.fallback_to_typeset:
+                    raise ValueError("mobile image generation failed; automatic typeset fallback is disabled")
+                used_fallback = True
+        omitted_points = 0
+        if blob is None:
+            rendered = await asyncio.to_thread(render_mobile_card, plan, locale)
+            blob = inspect_image(await asyncio.to_thread(phone_png, rendered.data, mobile.image_size))
+            text, omitted_points = rendered.text, rendered.omitted_points
         if blob is None:
             raise ValueError("mobile text image rendering failed")
-        details = {"width": MOBILE_WIDTH, "height": MOBILE_HEIGHT, "image_count": 1,
-                   "text": rendered.text, "source_chars": len(source),
-                   "omitted_points": rendered.omitted_points}
-        await self._event(task_id, "MOBILE_TEXT", "one 1440x2560 phone image rendered from source key points",
+        details = {"width": blob.width, "height": blob.height, "image_count": 1,
+                   "text": text, "source_chars": len(source), "omitted_points": omitted_points,
+                   "engine": "model" if ai_generated else "typeset", "fallback": used_fallback,
+                   "model": cfg.models.image_model if ai_generated else None,
+                   "style": mobile.style if ai_generated else "typeset"}
+        await self._event(task_id, "MOBILE_TEXT", "one phone image generated from source key points",
                           data={k: v for k, v in details.items() if k != "text"})
         return [ImageOutcome(idx, ImageDecision.OMIT, t(env.locale, "image_action_omit"))
                 for idx in range(len(env.media))] + [ImageOutcome(
                     len(env.media), ImageDecision.MOBILE_TEXT, t(env.locale, "mobile_text_ready"),
-                    output=blob, ai_generated=False, details=details)]
+                    output=blob, ai_generated=ai_generated, details=details)]
 
     async def _process_images(self, task_id: str, env: InputEnvelope, images: list[LoadedImage],
                               analyses: dict[int, ImageAnalysis], rewrite: RewriteResult,
@@ -858,7 +904,7 @@ class Pipeline:
                 except ValueError:
                     return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "cleanup_scope_required"),
                                         failure_stage=MediaFailureStage.IMAGE_POLICY)
-            attempts = 3 if env.quick else (2 if (execution == "create" and mode == "regenerate") else 1)
+            attempts = cfg.pipeline.quick_image_attempts if env.quick else (2 if (execution == "create" and mode == "regenerate") else 1)
             feedback = ""
             for attempt in range(1, attempts + 1):
                 try:
@@ -876,7 +922,7 @@ class Pipeline:
                     else:
                         prompt = render_image(chosen, reference) + feedback
                         async with limits.image, asyncio.timeout(
-                                min(cfg.cpa.timeout_seconds, 120.0) if env.quick else None):
+                                cfg.pipeline.quick_image_timeout_seconds if env.quick else None):
                             if execution == "edit":
                                 raw = await hub.cpa.images_edit(m.image_model, prompt, reference.blob.data,
                                     reference.blob.mime, size=m.image_size, mode=m.image_edit_mode)
@@ -1144,14 +1190,14 @@ class Pipeline:
             try:
                 if o.output is not None and decision != ImageDecision.REVIEW and failure_stage is None:
                     kind = "final"
-                    for upload_attempt in range(3 if automatic else 1):
+                    for upload_attempt in range(cfg.pipeline.automatic_upload_attempts if automatic else 1):
                         try:
                             key = await self.app.storage.persist(task_id, o.idx, o.output, kind)
                             break
                         except StorageBudgetExceeded:
                             raise
                         except Exception:
-                            if not automatic or upload_attempt == 2:
+                            if not automatic or upload_attempt == cfg.pipeline.automatic_upload_attempts - 1:
                                 raise
                             await self._event(task_id, "R2_UPLOAD", "automatically retrying image upload", level="warning")
                 elif decision == ImageDecision.REVIEW and cfg.storage.persist_review_media:

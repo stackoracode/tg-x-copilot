@@ -9,11 +9,18 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal, get_args, get_origin
 
 from pydantic import ValidationError
 
-from ..config import EDITABLE_KEYS, AppSettings, apply_overrides, get_path, is_secret_key, secret_values
+from ..config import (
+    EDITABLE_KEYS,
+    AppSettings,
+    apply_overrides,
+    get_path,
+    is_secret_key,
+    secret_values,
+)
 from ..db import Repository
 from ..logging_setup import ctx, register_secrets
 
@@ -61,7 +68,8 @@ class ConfigService:
         if isinstance(current, list):
             if raw.startswith("["):
                 return json.loads(raw)
-            return [int(x) for x in raw.replace(",", " ").split()]
+            parts = raw.replace(",", " ").split()
+            return parts if key == "web.fetch_strategies" else [int(x) for x in parts]
         if current is None and raw == "":
             return None
         return raw
@@ -95,8 +103,21 @@ class ConfigService:
                 shown = ", ".join(str(v) for v in value)
             else:
                 shown = "" if value is None else str(value)
+            parent = self.current
+            for part in key.split(".")[:-1]:
+                parent = getattr(parent, part)
+            field = type(parent).model_fields[key.rsplit(".", 1)[-1]]
+            choices = list(get_args(field.annotation)) if get_origin(field.annotation) is Literal else []
+            bounds = {}
+            for constraint in field.metadata:
+                for attribute, html in (("ge", "min"), ("le", "max")):
+                    bound = getattr(constraint, attribute, None)
+                    if bound is not None:
+                        bounds[html] = bound
             rows.append({"key": key, "value": shown, "overridden": key in self.overrides,
-                         "is_bool": isinstance(value, bool)})
+                         "is_bool": isinstance(value, bool), "choices": choices,
+                         "is_number": isinstance(value, (int, float)) and not isinstance(value, bool),
+                         "bounds": bounds})
         return rows
 
     def credentials_status(self) -> dict[str, bool]:

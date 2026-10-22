@@ -27,7 +27,7 @@ from tg_x_copilot.image_settings import (
     WorkflowMode,
     resolve_workflow,
 )
-from tg_x_copilot.models import InputEnvelope, TaskStatus
+from tg_x_copilot.models import InputEnvelope, RewriteResult, TaskStatus
 from tg_x_copilot.pipeline.media import inspect_image
 from tg_x_copilot.pipeline.mobile_text import (
     CardSection,
@@ -101,7 +101,11 @@ async def test_full_pipeline_returns_one_phone_image_and_the_standard_post(quick
     assert meta['mobile_card']['width'] == 1440 and meta['mobile_card']['height'] == 2560
     assert meta['mobile_card']['image_count'] == 1
     assert len([m for m in meta['media'] if m['asset_kind'] == 'final']) == 1
-    assert not quick_app.hub.cpa.named('images_generate') and not quick_app.hub.cpa.named('images_edit')
+    calls = quick_app.hub.cpa.named('images_generate')
+    assert len(calls) == 1 and calls[0][0][0] == quick_app.config.current.models.image_model
+    assert 'Whiteboard hand-drawn' in calls[0][0][1]
+    assert meta['mobile_card']['engine'] == 'model' and not meta['mobile_card']['fallback']
+    assert not quick_app.hub.cpa.named('images_edit')
     (_task, _idx, blob, _kind), _ = quick_app.storage.named('persist')[-1]
     assert (blob.width, blob.height) == (1440, 2560)
     assert not meta['problems'] and not meta['review']
@@ -207,3 +211,54 @@ async def test_multiple_input_photos_still_produce_only_one_mobile_output(quick_
     assert status == TaskStatus.DRAFT_READY
     assert [m['decision'] for m in meta['media']] == ['omit', 'omit', 'mobile_text']
     assert len(quick_app.storage.named('persist')) == 1
+
+
+async def test_typeset_option_preserves_original_mode_without_image_api(quick_app):
+    quick_app.config.current.mobile_text.engine = 'typeset'
+    quick_app.test_responses[MobileCardPlan] = outline()
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env(image_action=ImageAction.MOBILE_TEXT)))
+    status, _, meta = saved(quick_app)
+    assert status == TaskStatus.DRAFT_READY
+    assert meta['mobile_card']['engine'] == 'typeset' and not meta['mobile_card']['fallback']
+    assert not quick_app.hub.cpa.named('images_generate')
+
+
+async def test_mobile_uses_configured_model_size_style_and_automatic_fallback(quick_app):
+    cfg = quick_app.config.current
+    cfg.models.image_model = 'operator-image-model'
+    cfg.mobile_text.image_size = '1080x1920'
+    cfg.mobile_text.style = 'custom'
+    cfg.mobile_text.style_instructions = 'Use orange marker headings.'
+    cfg.pipeline.quick_image_attempts = 2
+    quick_app.test_responses[MobileCardPlan] = outline()
+    quick_app.hub.cpa.returns['images_generate'] = RuntimeError('provider down')
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env(image_action=ImageAction.MOBILE_TEXT)))
+    status, _, meta = saved(quick_app)
+    calls = quick_app.hub.cpa.named('images_generate')
+    assert len(calls) == 2
+    assert calls[0][0][0] == 'operator-image-model' and calls[0][1]['size'] == '1080x1920'
+    assert 'Use orange marker headings.' in calls[0][0][1]
+    assert status == TaskStatus.DRAFT_READY and not meta['review']
+    assert meta['mobile_card']['engine'] == 'typeset' and meta['mobile_card']['fallback']
+    assert (meta['mobile_card']['width'], meta['mobile_card']['height']) == (1080, 1920)
+
+
+async def test_disabling_typeset_fallback_surfaces_generation_failure(quick_app):
+    quick_app.config.current.mobile_text.fallback_to_typeset = False
+    quick_app.config.current.pipeline.quick_image_attempts = 1
+    quick_app.test_responses[MobileCardPlan] = outline()
+    quick_app.hub.cpa.returns['images_generate'] = RuntimeError('provider down')
+    with pytest.raises(ValueError, match='fallback is disabled'):
+        await Pipeline(quick_app)._mobile_text_image(TASK_ID, source_env(), {},
+            RewriteResult(
+                post=POSTS['en-US'], hook='', image_brief='', rationale=''), quick_app.config.current)
+
+
+def test_content_limits_keep_whole_points_within_budget():
+    from tg_x_copilot.pipeline.mobile_text import constrain_plan
+
+    limited = constrain_plan(MobileCardPlan(title='Title', sections=[
+        CardSection(title='Important', points=['Key: 12 devices.', 'X' * 500]),
+        CardSection(title='Background', points=['ignore'])]), 200, 1)
+    assert len(limited.sections) == 1
+    assert limited.sections[0].points == ['Key: 12 devices.']

@@ -477,6 +477,27 @@
     "mobile_text_hint": "一张 9:16 手机竖图，文字为主、高信息密度。沿用原文案规则；长文自动保留重点，不拆成多张。",
     "image_action_mobile_text": "手机文字信息图（单张）",
     "label_mobile_text": "手机文字信息图",
-    "mobile_text_ready": "已整理来源重点并生成一张 1440×2560 手机竖版信息图。"
+    "mobile_text_ready": "已整理来源重点并生成一张 9:16 手机竖版信息图。",
+    "setting_models.image_model": "标准、快速创作及手机信息图共用此生图模型，手机模式不会另选模型。",
+    "setting_mobile_text.engine": "默认使用生图模型；选择本地排版可保留原来的精确文字信息图。",
+    "setting_mobile_text.style": "手机模型生图风格，默认白板手绘。",
+    "setting_mobile_text.style_instructions": "补充配色、字体、布局等风格要求，适用于所有模型生图风格。",
+    "setting_mobile_text.image_size": "仅一张 9:16 手机竖图，独立于标准图片尺寸。模型输出会完整保留并适配画布。",
+    "setting_mobile_text.fallback_to_typeset": "模型生图全部失败后自动用本地排版交付；关闭后生图失败会将任务标为失败。",
+    "setting_mobile_text.source_max_chars": "手机模式网页读取及全文提炼的最大字符数。",
+    "setting_mobile_text.content_max_chars": "上图文字总字符上限，含标题；超出时保留完整重点，不拆成多图。",
+    "setting_mobile_text.max_sections": "单张手机图最多的信息分组数。",
+    "setting_pipeline.quick_image_attempts": "快速创作及手机模式的自动生图尝试次数。",
+    "setting_pipeline.quick_image_timeout_seconds": "每次生图等待秒数，不含排队；请让任务总超时覆盖多次尝试。",
+    "setting_pipeline.automatic_upload_attempts": "自动模式图片存储失败后的总尝试次数。",
+    "setting_pipeline.task_timeout_seconds": "任务总超时秒数，含抓取、文案及生图。",
+    "setting_web.fetch_max_chars": "标准及快速模式每页抓取字符上限；手机模式使用独立的全文字符上限。",
+    "setting_web.fetch_max_bytes": "网页响应体积上限，单位字节。",
+    "setting_web.fetch_browser_timeout_seconds": "浏览器抓取超时秒数。",
+    "setting_choice_model": "生图模型（默认）",
+    "setting_choice_typeset": "本地文字排版",
+    "setting_choice_whiteboard": "白板手绘（默认）",
+    "setting_choice_clean": "简洁排版",
+    "setting_choice_custom": "自定义风格"
   }
 }
