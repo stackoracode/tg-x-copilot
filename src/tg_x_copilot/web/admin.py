@@ -169,6 +169,23 @@ async def settings_save(request: Request) -> RedirectResponse:
         await ctx.config.update(changes)
     except (ValueError, ValidationError):
         return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "settings_invalid"))
+
+    # Hot-reload: if CPA/Jev endpoint or model fields changed, refresh the model list so
+    # the dropdown stays in sync without a manual button click.
+    _MODEL_KEYS = frozenset({"cpa.base_url", "jev.base_url", "jev.model",
+                              "models.text_model", "models.vision_model", "models.image_model"})
+    if changes.keys() & _MODEL_KEYS:
+        try:
+            summary = await ctx.ops.refresh_models()
+            refresh_msg = ctx.i18n.t(ctx.config.current.default_locale,
+                                      "models_refreshed",
+                                      summary=ctx.ops.model_summary(summary))
+            return _back("/settings",
+                         ctx.i18n.t(ctx.config.current.default_locale, "settings_saved")
+                         + " — " + refresh_msg)
+        except Exception:
+            pass  # refresh failure is non-fatal; settings were already saved
+
     return _back("/settings", ctx.i18n.t(ctx.config.current.default_locale, "settings_saved"))
 
 
