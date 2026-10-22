@@ -30,7 +30,8 @@ def preferences_from_form(form: Any, *, authorized_media: bool) -> ImagePreferen
         information_density=InformationDensity(str(form.get("density") or "medium")),
         target_locale=target,
     )
-    return ImagePreferences(workflow_mode=WorkflowMode.MANUAL, authorized_media=authorized_media,
+    mode = WorkflowMode.QUICK if form.get("mode") == "quick" else WorkflowMode.MANUAL
+    return ImagePreferences(workflow_mode=mode, authorized_media=authorized_media,
                             image_action=action, image_options=options)
 
 
@@ -44,4 +45,7 @@ def form_context(ctx: Any, prefs: ImagePreferences) -> dict[str, Any]:
         "max_files": ctx.config.current.web.max_files,
         "max_mb": ctx.config.current.pipeline.max_media_bytes // (1024 * 1024),
         "fetch_enabled": ctx.config.current.web.fetch_urls,
+        "fetch_ai_available": bool(ctx.config.current.web.fetch_llm_model)
+                              and "llm" in ctx.config.current.web.fetch_strategies,
+        "quick_mode": prefs.workflow_mode == WorkflowMode.QUICK,
     }

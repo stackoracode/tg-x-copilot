@@ -2,7 +2,7 @@
 {% block title %}{{ t('admin_Task') }} {{ task.id[:8] }}{% endblock %}
 {% block content %}
 <div class="card">
-  <h2 style="margin-top:0">{{ t('admin_Task') }} <code>{{ task.id }}</code> <span class="pill s-{{ task.status }}">{{ label(task.status) }}</span></h2>
+  <h2 style="margin-top:0">{{ t('admin_Task') }} <code>{{ task.id }}</code> <span class="pill s-{{ task.status }}">{{ label(task.status) }}</span>{% if task.envelope.quick %} <span class="pill">⚡ {{ t('web_mode_quick') }}</span>{% endif %}</h2>
   <p class="muted">{{ t('admin_stage') }} {{ a(task.stage or "-") }} · {{ t('admin_attempts') }} {{ task.attempts }} · {{ t('admin_score') }} {{ task.score }} · {{ t('admin_route') }} {{ label(task.route or "-") }} · {{ task.locale }}/{{ task.market }} · {{ t('admin_created') }} {{ task.created_at }}</p>
   {% if task.locale != locale %}<p class="muted">{{ t('admin_Locale mismatch') }}</p>{% endif %}
   {% if task.error %}<pre class="bad">{{ t("task_failure") }}</pre>{% endif %}
@@ -62,6 +62,7 @@
   {% if meta.warnings %}<h4>{{ t('admin_Warnings') }}</h4><ul>{% for p in meta.warnings %}<li>{{ p }}</li>{% endfor %}</ul>{% endif %}
   {% if meta.claims %}<h4>{{ t('admin_Claims') }}</h4><ul>{% for c in meta.claims %}<li><span class="pill">{{ label(c.basis) }}</span> {{ c.text }}</li>{% endfor %}</ul>{% endif %}
   {% if meta.added_value %}<p><b>{{ t('admin_Added value:') }}</b> {{ meta.added_value }}</p>{% endif %}
+  {% if meta.image_prompt %}<details><summary class="muted">{{ t('web_image_prompt') }}</summary><pre>{{ meta.image_prompt }}</pre></details>{% endif %}
 </div>
 
 <div class="card">
@@ -96,7 +97,13 @@
 </div>
 {% endif %}
 
-{% if can_edit_images %}
+{% if can_edit_images and (task.draft_meta or {}).quick %}
+<form class="card" method="post" action="/tasks/{{ task.id }}/images">
+  <h3 style="margin-top:0">{{ t('web_image_tools') }}</h3>
+  <p class="hint">{{ t('web_quick_new_image_hint') }}</p>
+  <button class="primary" type="submit">{{ t('web_quick_new_image') }}</button>
+</form>
+{% elif can_edit_images %}
 {% set opts = prefs.image_options %}
 <form class="card" method="post" action="/tasks/{{ task.id }}/images">
   <h3 style="margin-top:0">{{ t('web_image_tools') }}</h3>

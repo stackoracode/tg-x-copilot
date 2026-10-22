@@ -1,4 +1,7 @@
-"""Fetch readable text from a URL submitted on the web compose page.
+"""Fetch readable text from a URL (web compose page, Telegram links, /fetch, link preview).
+
+`fetch_page` is the plain HTTP fetch. `LinkReader` (link_reader.py) layers fallbacks on top
+(reader service, headless browser, LLM with web access) for pages that block simple clients.
 
 SSRF guard (the server fetches URLs typed by the operator):
 - only http/https, no credentials in the URL;
@@ -30,6 +33,21 @@ _TEXT_TYPES = ("text/html", "application/xhtml+xml", "text/plain")
 _SKIP = {"script", "style", "noscript", "nav", "footer", "header", "aside", "form", "svg",
          "iframe", "template", "button", "select"}
 _WS = re.compile(r"\s+")
+_META_CHARSET = re.compile(rb"<meta[^>]+charset=[\"']?([A-Za-z0-9_-]+)", re.I)
+# Desktop browser headers: many sites serve a block / "unsupported client" page to bot UAs.
+BROWSER_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                   "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"),
+    "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
+    "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+}
+# Second try: a phone (WeChat's in-app browser for mp.weixin.qq.com articles).
+MOBILE_HEADERS = {
+    **BROWSER_HEADERS,
+    "User-Agent": ("Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 "
+                   "(KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.50(0x18003231) "
+                   "NetType/WIFI Language/zh_CN"),
+}
 _BLOCK = {"p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre",
           "tr", "section", "article", "figcaption", "dd", "dt", "td"}
 
@@ -43,6 +61,12 @@ class PageContent:
     url: str
     title: str
     text: str
+    method: str = "direct"  # direct | reader | browser | llm
+
+    @property
+    def ai_retrieved(self) -> bool:
+        """Text produced by a model's own browsing: unverified, may be incomplete."""
+        return self.method == "llm"
 
     def as_message(self) -> str:
         head = self.title.strip()
@@ -137,14 +161,27 @@ async def check_url(url: str, resolver: Resolver = _system_resolver) -> str:
     return url.strip()
 
 
+def _decode(body: bytes, header_encoding: str | None) -> str:
+    """Charset from the Content-Type header, else <meta charset> (GBK/Big5 news sites)."""
+    encoding = header_encoding
+    if not encoding:
+        match = _META_CHARSET.search(body[:4096])
+        encoding = match[1].decode("ascii") if match else "utf-8"
+    try:
+        return body.decode(encoding, errors="replace")
+    except LookupError:
+        return body.decode("utf-8", errors="replace")
+
+
 async def fetch_page(http: httpx.AsyncClient, url: str, *, timeout: float, max_bytes: int,
-                     max_chars: int, resolver: Resolver = _system_resolver) -> PageContent:
+                     max_chars: int, resolver: Resolver = _system_resolver,
+                     headers: dict[str, str] | None = None) -> PageContent:
     async def run() -> PageContent:
         current = url
         for _ in range(_MAX_REDIRECTS + 1):
             await check_url(current, resolver)
             async with http.stream("GET", current, follow_redirects=False,
-                                   headers={"Accept": "text/html,text/plain;q=0.9"}) as resp:
+                                   headers=headers or BROWSER_HEADERS) as resp:
                 if resp.is_redirect and resp.headers.get("location"):
                     current = urljoin(current, resp.headers["location"])
                     continue
@@ -158,8 +195,8 @@ async def fetch_page(http: httpx.AsyncClient, url: str, *, timeout: float, max_b
                     body += chunk
                     if len(body) > max_bytes:
                         break  # keep what we have: the readable start of a long page
-                encoding = resp.encoding or "utf-8"
-            text = bytes(body[:max_bytes]).decode(encoding, errors="replace")
+                charset = resp.charset_encoding
+            text = _decode(bytes(body[:max_bytes]), charset)
             if ctype == "text/plain":
                 return PageContent(current, "", text[:max_chars].strip())
             title, readable = extract_text(text, max_chars=max_chars)
@@ -175,3 +212,26 @@ async def fetch_page(http: httpx.AsyncClient, url: str, *, timeout: float, max_b
 
 
 URL_RE = re.compile(r"https?://[^\s<>\"']+")
+
+
+# Phrases of anti-bot / verification interstitials (WeChat "环境异常", Cloudflare, captchas).
+_BLOCK_MARKERS = (
+    "环境异常", "完成验证后即可继续访问", "请在微信客户端打开链接", "访问过于频繁", "请输入验证码",
+    "安全验证", "人机验证", "滑动验证", "Just a moment...", "Attention Required!",
+    "Checking your browser", "Enable JavaScript and cookies to continue", "verify you are human",
+    "Verifying you are human", "unusual traffic", "Access Denied", "Access denied",
+    "Please enable JavaScript", "Please turn JavaScript on", "captcha", "CAPTCHA",
+)
+MIN_TEXT_CHARS = 200  # less than this is a stub (JS shell, cookie wall) worth another strategy
+
+
+def block_reason(page: PageContent) -> str | None:
+    """Why `page` is not the real article: a verification/anti-bot page or (almost) no text.
+    Markers only count on short pages or in the title, so articles *about* captchas pass."""
+    text = page.text.strip()
+    for marker in _BLOCK_MARKERS:
+        if marker in page.title or (marker in text and len(text) < 1500):
+            return f"blocked ({marker})"
+    if len(text) < MIN_TEXT_CHARS:
+        return f"too little text ({len(text)} chars)"
+    return None

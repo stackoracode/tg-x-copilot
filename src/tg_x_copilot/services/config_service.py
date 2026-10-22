@@ -107,6 +107,7 @@ class ConfigService:
             "JEV__API_KEY": bool(s.jev.api_key.get_secret_value()),
             "R2__ACCESS_KEY_ID": bool(s.r2.access_key_id.get_secret_value()),
             "R2__SECRET_ACCESS_KEY": bool(s.r2.secret_access_key.get_secret_value()),
+            "WEB__FETCH_READER_API_KEY": bool(s.web.fetch_reader_api_key.get_secret_value()),
         }
 
 

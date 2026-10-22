@@ -171,11 +171,19 @@ The web app and admin UI listen on `127.0.0.1:8080`. Open them through an SSH tu
 The same server that hosts the admin UI is a complete, mobile-friendly client. It works with
 `TELEGRAM__ENABLED=false` (web-only mode) or next to the bot.
 
-**Create** — tap **＋ New** (`/new`):
+**Create** — tap **＋ New** (`/new`) and pick a mode:
+- **⚡ Quick create**: always returns one ready post **and** one generated image, whatever you
+  enter (see [Quick create](#quick-create-always-text--image)). Optional *Directions* steer the
+  tone and the picture.
+- **Standard**: the full editorial pipeline (scoring, fact guards, rights-aware images, review).
+
+Fields:
 - **Text**: paste a post, article excerpt or your own notes.
-- **Links**: one or more URLs. With *Read the linked pages* the server fetches each public
-  page's readable text (SSRF-guarded: public http/https hosts only, redirects re-checked,
-  2 MB / 15 s caps) and uses it as source material, like a separate forwarded post.
+- **Links**: one or more URLs. With *Read the linked pages* the worker reads each page in the
+  background, falling back to other methods for pages that block bots (see
+  [Reading links](#reading-links)), and uses it as source material, like a separate
+  forwarded post. **Test links** shows right away which method can read each URL and an
+  excerpt, without creating a task.
 - **Images**: choose files, drop them, or **paste screenshots** straight from the clipboard;
   on phones the picker offers camera and gallery. Up to `WEB__MAX_FILES` (10) images, each
   validated as a real JPEG/PNG/WebP/GIF.
@@ -210,6 +218,61 @@ reverse proxy such as Caddy (`copilot.example.com { reverse_proxy 127.0.0.1:8080
   `ADMIN__TRUSTED_ORIGINS=["https://copilot.example.com"]` (CSRF same-origin check);
 - HTTPS also enables the one-tap clipboard copy (plain-HTTP pages fall back to a legacy copy).
 - *Add to Home Screen* gives an app-like shortcut on iOS/Android.
+
+## Quick create (always text + image)
+
+A separate, short path for when you just want a post and a picture, on both channels:
+
+| | Telegram | Web |
+|---|---|---|
+| Switch on for everything you send | `/quick` (send again to switch off), or **⚡ Quick create** in Image Tools | choose **⚡ Quick create** on `/new` (remembered) |
+| One quick task | `/quick <text>`, or a photo/album captioned `/quick …` | — |
+| New picture, same post | **Redo images** on the card | **🎨 New image** on the task page |
+
+What happens: linked pages are read (optional), then one model call writes the post (within
+`PIPELINE__MAX_POST_CHARS`, shortened and retried if needed) plus an image prompt, seeing any
+attached photos. Image2 then generates the picture: the first attached photo is the reference
+(`images_edit`). If editing keeps failing it falls back to text-to-image, so a picture still
+arrives. The task ends as `draft_ready` with the image attached, or as `needs_review` with the post
+ready and the image failure explained.
+
+Skipped on purpose: Jev triage, the suitability evaluation, fact guards, the rights-aware
+image policy, edit-rights confirmation and image QC. Attached photos are used only as
+references; they are not delivered or kept. Still enforced: who may use it (Telegram allow
+list, admin login) and the image provider's own content rules.
+
+## Reading links
+
+Linked pages are read by the worker for **both channels**: web submissions when *Read the
+linked pages* is ticked, and Telegram messages per `WEB__FETCH_TELEGRAM_LINKS` (`short` =
+only when the post is little more than the link, `always`, `off`). At most
+`WEB__FETCH_MAX_LINKS` (3) per task; `t.me` links and tracking parameters are dropped.
+
+Strategies are tried in `WEB__FETCH_STRATEGIES` order until one returns the real article.
+Anti-bot or verification pages (WeChat's **环境异常** / "完成验证后即可继续访问", Cloudflare
+"Just a moment…", captchas) and near-empty JS shells count as failures:
+
+1. **direct**: plain HTTP with desktop-browser headers, then again as a phone / WeChat in-app
+   browser. Honours `<meta charset>` (GBK/Big5 sites).
+2. **reader**: a reader service (`WEB__FETCH_READER_URL`, default `https://r.jina.ai/`) renders
+   the page from its own network. **This sends the URL to that service**; set the URL to empty
+   to keep everything on your server. Many VPS networks are refused anonymous use. A free key
+   (`WEB__FETCH_READER_API_KEY`, env-only) fixes that.
+3. **browser**: headless Chromium via Playwright for JavaScript-rendered pages. Optional:
+   `pip install -e .[browser]` (or `pip install playwright`). It uses Playwright's own
+   Chromium (`playwright install chromium`) or an installed Chrome/Chromium on `PATH` /
+   `WEB__FETCH_BROWSER_PATH`. Images, fonts and media are not loaded, and **every request the
+   page makes** passes the same public-host check.
+4. **llm**: a model with web access behind your CPA proxy (`WEB__FETCH_LLM_MODEL`, e.g. a
+   search/browsing model; empty = off). It is told to return `ok:false` rather than guess.
+   Its text is marked *AI-retrieved*: a warning on every draft, plus a review item on
+   standard (non-direct) tasks, because it can't be checked against the page. On the web
+   page it can be switched off per submission.
+
+Every attempt is logged on the task timeline (`links` step), for example
+`direct: blocked (环境异常); reader: ok, 5210 chars`. Pages that still can't be read leave a
+warning on the draft. Test a URL from Telegram with **`/fetch <url>`**, or with **Test
+links** on `/new`.
 
 ## Using the bot
 
@@ -415,6 +478,8 @@ this change does not rename provider model IDs or alter production configuration
 | Jev disabled, unconfigured, timeout, or error | Warning logged; the task continues and the main LLM decides |
 | Telegram media download fails | Affected images → REVIEW with the reason; text draft continues |
 | Image model / QC / R2 upload fails | Affected image → REVIEW with the reason; text draft continues |
+| Quick create: image generation fails | Edit retried, then text-to-image; if all fail the post is still delivered (`needs_review`) |
+| A linked page blocks bots ("环境异常", captcha, JS shell) | Next strategy (phone UA → reader → browser → AI); every attempt on the timeline |
 | R2 fetch fails while sending a draft | The text and review card are still sent, with a note that images are unavailable |
 | Image2 output fails visual QC | → REVIEW; can be kept as a review copy if enabled |
 | LLM adds background facts | Draft → `needs_review`; a human must check them before approving |
@@ -429,6 +494,8 @@ this change does not rename provider model IDs or alter production configuration
 - **CSRF:** every state-changing admin request must come from the same origin (`Origin`/`Referer` = request host, or `ADMIN__TRUSTED_ORIGINS`). Cross-site form posts are refused with 403 even though the browser would re-send Basic credentials.
 
 - Only `TELEGRAM__ALLOWED_USER_IDS` can use the bot. An empty list means nobody can.
+- **Link reading is SSRF-guarded** in every strategy: only public http(s) hosts, redirects
+  re-checked, and in the headless browser every sub-request is checked as well.
 - The admin UI uses HTTP Basic auth and should be reached only over localhost or a tunnel.
 - **API keys are environment-only.** The CPA, Jev, and R2 keys, and every other
   credential, are read from `.env` (`chmod 600`). They can't be edited in the admin UI and

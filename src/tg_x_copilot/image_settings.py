@@ -47,6 +47,7 @@ class ImageOption(StrEnum):
 class WorkflowMode(StrEnum):
     MANUAL = "manual"
     AUTO_BUNDLE = "auto_bundle"
+    QUICK = "quick"  # every submission -> one post + one generated image, no review gates
 
 
 class InformationDensity(StrEnum):

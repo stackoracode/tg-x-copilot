@@ -24,6 +24,8 @@ dependencies = [
 
 [project.optional-dependencies]
 fast = ["cryptg>=0.4"]
+# Headless-browser link reading (then `playwright install chromium`, or use an installed Chrome)
+browser = ["playwright>=1.45"]
 dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.5"]
 
 [project.scripts]
