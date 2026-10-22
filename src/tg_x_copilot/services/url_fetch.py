@@ -26,6 +26,8 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from ..urls import URL_RE as URL_RE
+
 Resolver = Callable[[str, int], Awaitable[list[str]]]
 
 _MAX_REDIRECTS = 4
@@ -142,20 +144,25 @@ async def _system_resolver(host: str, port: int) -> list[str]:
 
 async def check_url(url: str, resolver: Resolver = _system_resolver) -> str:
     """Validate scheme/host and that every resolved address is public. Returns the URL."""
-    parts = urlsplit(url.strip())
-    if parts.scheme not in ("http", "https") or not parts.hostname:
+    try:
+        parts = urlsplit(url.strip())
+        host = parts.hostname
+        port = parts.port
+    except ValueError as exc:
+        raise UrlFetchError("invalid URL syntax (host, Unicode or port)") from exc
+    if parts.scheme not in ("http", "https") or not host:
         raise UrlFetchError("only http(s) URLs with a host are allowed")
     if parts.username or parts.password:
         raise UrlFetchError("URLs with credentials are not allowed")
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    port = port or (443 if parts.scheme == "https" else 80)
     try:
-        literal = ipaddress.ip_address(parts.hostname)
+        literal = ipaddress.ip_address(host)
         addresses = [str(literal)]
     except ValueError:
         try:
-            addresses = await resolver(parts.hostname, port)
-        except OSError as exc:
-            raise UrlFetchError(f"cannot resolve host: {exc}") from exc
+            addresses = await resolver(host, port)
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise UrlFetchError("cannot resolve host") from exc
     if not addresses or not all(_is_public(a) for a in addresses):
         raise UrlFetchError("host resolves to a non-public address")
     return url.strip()
@@ -210,8 +217,6 @@ async def fetch_page(http: httpx.AsyncClient, url: str, *, timeout: float, max_b
     except httpx.HTTPError as exc:
         raise UrlFetchError(f"{type(exc).__name__}") from exc
 
-
-URL_RE = re.compile(r"https?://[^\s<>\"']+")
 
 
 # Phrases of anti-bot / verification interstitials (WeChat "环境异常", Cloudflare, captchas).

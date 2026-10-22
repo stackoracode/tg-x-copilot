@@ -7,9 +7,11 @@ images are the "album". Media message ids are 1..n so the processor can map load
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from ..models import WEB_CHAT_ID, WEB_USER_ID, InputEnvelope, MediaKind, SourceMedia
+from ..urls import extract_urls
 from .media import ImageBlob, inspect_image
 
 _ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp", "image/gif"}
@@ -45,21 +47,15 @@ def validate_uploads(files: list[tuple[str, bytes]], *, max_files: int, max_byte
 
 
 def split_urls(raw: str) -> list[str]:
-    seen: list[str] = []
-    for token in raw.replace(",", " ").split():
-        token = token.strip()
-        if token.startswith(("http://", "https://")) and token not in seen:
-            seen.append(token)
-    return seen
+    # Separate comma-delimited URL lists without corrupting commas inside a query/path.
+    return extract_urls(re.sub(r",(?=https?://)", " ", raw, flags=re.IGNORECASE))
 
 
 def build_web_envelope(*, text: str, urls: list[str], pages: list[WebPage],
                        images: list[ImageBlob], own_content: bool, locale: str,
                        market: str) -> InputEnvelope:
-    from ..services.url_fetch import URL_RE
-
     text = text.strip()
-    inline = [u for u in URL_RE.findall(text)]
+    inline = extract_urls(text)
     first_urls = list(dict.fromkeys(inline + urls))
     message_texts: list[str] = []
     message_urls: list[list[str]] = []

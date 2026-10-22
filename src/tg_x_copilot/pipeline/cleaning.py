@@ -7,16 +7,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlunsplit
 
 from pydantic import BaseModel
 
 from .. import prompts
 from ..models import InputEnvelope
+from ..urls import URL_RE, extract_urls, parse_http_url, trim_url_token
 from .guards import numbers_in
 
 log = logging.getLogger(__name__)
-_URL = re.compile(r"https?://[^\s<>]+")
+
 _NOISE = re.compile(
     r"^\s*(?:forwarded from\b|转发自|轉發自|(?:join|follow|subscribe)(?:\s+(?:us|our|the|this|@))\b"
     r"|(?:加入|关注|關注|订阅|訂閱)(?:我们|我們|本|频道|頻道|群|@)"
@@ -29,8 +30,11 @@ class CoreContent(BaseModel):
     core_text: str  # empty only when this message contains no publishing facts
 
 
-def clean_url(url: str) -> str:
-    parts = urlsplit(url)
+def clean_url(url: str, *, preserve_invalid: bool = False) -> str:
+    parts = parse_http_url(url)
+    if parts is None:
+        # Bad references must not crash a task or silently delete source prose.
+        return url if preserve_invalid else ""
     if (parts.hostname or '').lower() in {'t.me', 'telegram.me', 'telegram.dog'}:
         return ''
     query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
@@ -48,11 +52,16 @@ def preclean(text: str) -> str:
         seen_tags.add(value)
         return match[0]
 
+    def replace_url(match: re.Match[str]) -> str:
+        original = match[0]
+        token = trim_url_token(original)
+        return clean_url(token, preserve_invalid=True) + original[len(token):]
+
     lines = []
     for line in text.splitlines():
         if _NOISE.search(line):
             continue
-        line = _URL.sub(lambda m: clean_url(m[0]), line)
+        line = URL_RE.sub(replace_url, line)
         line = _HASHTAG.sub(tag, line).strip()
         if line:
             lines.append(line)
@@ -70,7 +79,8 @@ async def clean_bundle(env: InputEnvelope, app) -> tuple[InputEnvelope, bool]:
         # Preserve original text directly without stripping or LLM extraction loss.
         source = env.message_texts or ([env.text] if env.text else [])
         canonical = "\n\n".join(preclean(t) for t in source if t.strip()) or env.text
-        urls = list(dict.fromkeys(_URL.findall(canonical) + env.urls))
+        urls = list(dict.fromkeys(extract_urls(canonical) +
+                                  [cleaned for url in env.urls if (cleaned := clean_url(url))]))
         return env.model_copy(update={'text': canonical, 'message_texts': [canonical] if canonical else [], 'message_urls': [], 'urls': urls}), False
 
     cfg = app.config.current
@@ -104,5 +114,5 @@ async def clean_bundle(env: InputEnvelope, app) -> tuple[InputEnvelope, bool]:
         if core and core not in cores:
             cores.append(core)
     canonical = '\n\n'.join(cores)
-    urls = list(dict.fromkeys(_URL.findall(canonical)))
+    urls = extract_urls(canonical)
     return env.model_copy(update={'text': canonical, 'message_texts': cores, 'message_urls': [], 'urls': urls}), fallback
