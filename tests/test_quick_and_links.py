@@ -136,11 +136,15 @@ async def test_quick_and_standard_use_identical_writing_and_image_rules(quick_ap
         assert "Configured style" in rewrite[0][1][0]["content"]
         assert "Configured hook" in rewrite[0][1][0]["content"]
         schemas = [a[2] for a, _ in calls]
-        assert Evaluation in schemas and FactVerification in schemas and ImageQC in schemas
+        assert Evaluation in schemas
+        assert (FactVerification in schemas) == (not quick)
+        assert (ImageQC in schemas) == (not quick)
         image = quick_app.hub.cpa.named("images_generate")[0]
-        assert POSTS[code] in image[0][1] and "high" in image[0][1]
+        assert (SOURCE if quick else POSTS[code]) in image[0][1] and "high" in image[0][1]
         records.append((rewrite, image))
-    assert records[0] == records[1]  # same models, prompts, options and provider parameters
+    assert records[0][0] == records[1][0]  # identical standard writing configuration
+    assert records[0][1][0][0] == records[1][1][0][0]  # same image model
+    assert records[0][1][1] == records[1][1][1]  # same image size/provider parameters
     assert len(quick_app.repo.named("save_triage")) == 2
     assert len(quick_app.repo.named("save_evaluation")) == 2
 
@@ -177,11 +181,12 @@ async def test_quick_analyzes_all_photos_and_uses_source_facts(quick_app):
     assert len([a for a, _ in calls if a[2] is ImageAnalysis]) == 2
     assert len(saved(quick_app)[2]["source_analyses"]) == 2
     assert not quick_app.hub.cpa.named("images_edit")
-    assert SOURCE in next(a[1][-1]["content"] for a, _ in calls if a[2] is VerifiedFacts)
+    assert SOURCE in quick_app.hub.cpa.named("images_generate")[0][0][1]
+    assert all(a[2] is not VerifiedFacts for a, _ in calls)
 
 
 @pytest.mark.parametrize("failure", ["provider", "qc", "facts", "storage", "limit"])
-async def test_quick_cannot_be_ready_or_approvable_without_verified_image(quick_app, failure):
+async def test_quick_automatically_delivers_without_review_gates(quick_app, failure):
     if failure == "provider":
         quick_app.hub.cpa.returns["images_generate"] = RuntimeError("upstream down")
     elif failure == "qc":
@@ -195,10 +200,17 @@ async def test_quick_cannot_be_ready_or_approvable_without_verified_image(quick_
         quick_app.repo.returns["get_rules"] = {"max_images": 0}
     await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env()))
     status, text, meta = saved(quick_app)
-    assert status == TaskStatus.NEEDS_REVIEW and text == POSTS["en-US"]
-    assert meta["problems"] and not any(m["asset_kind"] == "final" for m in meta["media"])
-    if failure in ("facts", "limit"):
-        assert not quick_app.hub.cpa.named("images_generate")
+    assert text == POSTS["en-US"] and not meta["problems"] and not meta["review"]
+    if failure == "storage":
+        assert status == TaskStatus.FAILED
+    else:
+        assert status == TaskStatus.DRAFT_READY and any(m["asset_kind"] == "final" for m in meta["media"])
+    if failure == "provider":
+        assert len(quick_app.hub.cpa.named("images_generate")) == 3
+        assert not meta["media"][-1]["ai_generated"]  # local fallback is labeled accurately
+        assert meta["media"][-1]["decision"] == "info_card"
+    schemas = [a[2] for a, _ in quick_app.hub.cpa.named("chat_json")]
+    assert FactVerification not in schemas and ImageQC not in schemas
 
 
 async def test_quick_failed_source_edit_falls_back_to_standard_information_card(quick_app):
@@ -216,7 +228,7 @@ async def test_quick_failed_source_edit_falls_back_to_standard_information_card(
     assert status == TaskStatus.DRAFT_READY and meta["image_action"] == "info_card"
     assert quick_app.hub.cpa.named("images_edit")
     assert quick_app.hub.cpa.named("images_generate")
-    assert any(a[2] is ImageQC for a, _ in quick_app.hub.cpa.named("chat_json"))
+    assert all(a[2] is not ImageQC for a, _ in quick_app.hub.cpa.named("chat_json"))
 
 
 def test_strip_command_removes_telegram_prefix():
@@ -237,10 +249,9 @@ async def test_quick_image_rerun_keeps_post_and_uses_verified_facts(quick_app, l
     assert "image_prompt" not in meta
     calls = quick_app.hub.cpa.named("chat_json")
     assert all(a[2] is not RewriteResult for a, _ in calls)
-    assert any(a[2] is FactVerification for a, _ in calls)
-    assert any(a[2] is ImageQC for a, _ in calls)
+    assert all(a[2] not in (FactVerification, ImageQC) for a, _ in calls)
     image_prompt = quick_app.hub.cpa.named("images_generate")[0][0][1]
-    assert POSTS["en-US"] in image_prompt and "Invented 999" not in image_prompt
+    assert SOURCE in image_prompt and "Invented 999" not in image_prompt
 
 
 async def test_legacy_photo_only_retry_extracts_facts_from_original_image(quick_app):
@@ -264,8 +275,8 @@ async def test_quick_writing_uses_instructions_without_changing_source_facts(qui
     calls = quick_app.hub.cpa.named("chat_json")
     message = next(a[1][0]["content"] for a, _ in calls if a[2] is RewriteResult)
     assert "Use a flat vector style" in message and "must not override source facts" in message
-    facts = next(a[1][-1]["content"] for a, _ in calls if a[2] is VerifiedFacts)
-    assert "flat vector style" not in facts
+    facts = saved(quick_app)[2]["verified_facts"]
+    assert "flat vector style" not in str(facts)
 
 
 async def test_submit_marks_quick_profile_tasks(app):
@@ -615,3 +626,68 @@ def test_quick_task_page_offers_new_image():
     r = client.get(f"/tasks/{TASK_ID}")
     assert r.status_code == 200 and "New image" in r.text and "A neon city" in r.text
     assert 'name="image_action"' in r.text  # same image tools as standard mode
+
+
+async def test_quick_retries_image_provider_without_operator_action(quick_app):
+    attempts = []
+
+    def generate(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError("temporary provider outage")
+        return png_bytes("blue")
+
+    quick_app.hub.cpa.returns["images_generate"] = generate
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env()))
+    status, _, meta = saved(quick_app)
+    assert status == TaskStatus.DRAFT_READY and len(attempts) == 3
+    assert meta["media"][-1]["ai_generated"]
+    assert not meta["problems"] and not meta["review"]
+
+
+async def test_quick_upload_retries_transient_errors(quick_app):
+    attempts = []
+
+    def persist(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise RuntimeError("temporary storage outage")
+        return "assets/aa/recovered.png"
+
+    quick_app.storage.returns["persist"] = persist
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env()))
+    status, _, meta = saved(quick_app)
+    assert status == TaskStatus.DRAFT_READY and len(attempts) == 3
+    assert meta["media"][-1]["asset_key"] == "assets/aa/recovered.png"
+
+
+async def test_quick_editorial_diagnostics_never_require_manual_approval(quick_app):
+    quick_app.repo.returns["get_rules"] = {"banned_phrases": ["Acme"]}
+    quick_app.test_responses[Evaluation] = Evaluation(suitable=False, value_score=.1)
+    await Pipeline(quick_app)._process_claimed(TASK_ID, task_of(source_env(is_direct=False)))
+    status, _, meta = saved(quick_app)
+    assert status == TaskStatus.DRAFT_READY and meta["automatic_diagnostics"]
+    assert not meta["problems"] and not meta["review"] and not meta["text_review"]
+
+
+def test_quick_source_packet_preserves_numbers_without_model_rewriting():
+    from tg_x_copilot.pipeline.facts import packet_is_traceable
+    from tg_x_copilot.pipeline.quick_card import source_packet
+
+    envelope = source_env(text="2025年：位列第8；占比12.5%。", message_texts=[])
+    packet = source_packet(envelope, {})
+    assert packet.facts[0].text == packet.facts[0].evidence == envelope.text
+    assert packet_is_traceable(packet, envelope.text, {})
+
+
+@pytest.mark.parametrize("code", ["en-US", "zh-CN"])
+@pytest.mark.parametrize("density", list(InformationDensity))
+def test_local_information_card_is_valid_png_with_requested_dimensions(code, density):
+    from tg_x_copilot.pipeline.media import inspect_image
+    from tg_x_copilot.pipeline.quick_card import render_card, source_packet
+
+    envelope = source_env(code)
+    image = inspect_image(render_card(POSTS[code], source_packet(envelope, {}), density=density,
+                                      size="1536x1024", locale=code))
+    assert image is not None and image.mime == "image/png"
+    assert (image.width, image.height) == (1536, 1024)

@@ -221,25 +221,27 @@ reverse proxy such as Caddy (`copilot.example.com { reverse_proxy 127.0.0.1:8080
 
 ## Quick create (always text + image)
 
-Quick create uses the **same pipeline** as standard mode: link reading, cleaning, Jev,
-image analysis, evaluation, configured writing rules and hooks, verified fact packets,
-image settings and image QC. It adds the requirement to generate both a post and an image;
-it does not use separate creative prompts or bypass factual checks.
+Quick create uses standard writing prompts, configured rules/hooks, image actions, flags,
+language, density and image-provider settings. It automatically returns a post and an image
+without manual review or manual retries. Editorial diagnostics are recorded internally.
 
 | | Telegram | Web |
 |---|---|---|
-| Switch on | `/quick` (send again to switch off), or **⚡ Quick create** in Image Tools | **⚡ Quick create** on `/new` (remembered) |
-| One task | `/quick <text>`, or a photo/album captioned `/quick …` | select the mode before submitting |
-| New picture, same post | **Redo images** | image tools on the task page |
+| Switch on | `/quick` (send again to switch off) | **⚡ Quick create** on `/new` |
+| One task | `/quick <text>`, or a photo captioned `/quick …` | select the mode |
 
-Both modes expose the same image actions, flags, target language and density controls.
-In quick mode, automatic/keep/omit/text-only actions default to a verified information card;
-a source-dependent action without source images also uses an information card. Other actions
-are honored, with a standard information-card fallback if they produce no usable generated image.
-The same configured image limit and R2 budgets apply. Missing facts, failed generation or
-failed QC cannot be bypassed to satisfy the image requirement: the draft stays `needs_review`
-and cannot be approved until it has a verified generated image. Image-only retries retain
-the post and rebuild images from source facts, including drafts created by older quick versions.
+Quick mode passes exact source excerpts to the standard image prompt, avoiding a separate
+model fact-packet approval gate; it does not run image QC. Image-provider failures retry up
+to three times automatically, then source-action failures fall back to an information card.
+If the provider remains unavailable, Pillow renders a source/post information card locally.
+Locally rendered cards are explicitly marked as not AI-generated. No-image settings resolve
+to an information card in quick mode; standard mode retains its review rules and limits.
+Transient image-upload errors also retry automatically. Permanent storage failure is a
+technical failure, never an instruction to review or approve a missing image. No mode
+publishes to X automatically.
+
+The local renderer uses system CJK fonts (Noto Sans CJK or WenQuanYi on Linux). The deployment
+has these fonts installed. Both modes keep their source audit information and storage budgets.
 
 ## Reading links
 
@@ -478,7 +480,7 @@ this change does not rename provider model IDs or alter production configuration
 | Jev disabled, unconfigured, timeout, or error | Warning logged; the task continues and the main LLM decides |
 | Telegram media download fails | Affected images → REVIEW with the reason; text draft continues |
 | Image model / QC / R2 upload fails | Affected image → REVIEW with the reason; text draft continues |
-| Quick create: image generation fails | Standard image handling and QC; missing generated image blocks approval until retried successfully |
+| Quick create: image generation fails | Automatically retries, then renders a local information card; no manual review required |
 | A linked page blocks bots ("环境异常", captcha, JS shell) | Next strategy (phone UA → reader → browser → AI); every attempt on the timeline |
 | R2 fetch fails while sending a draft | The text and review card are still sent, with a note that images are unavailable |
 | Image2 output fails visual QC | → REVIEW; can be kept as a review copy if enabled |

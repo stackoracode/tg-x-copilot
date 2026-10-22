@@ -81,15 +81,13 @@ failed. The web channel is single-host by design (workers read the inbox from lo
 
 ## Quick create and link reading
 
-Both modes use `Pipeline._process_claimed`: links → clean → Jev → media → vision →
-evaluate → standard rewrite and guards → verified facts → standard images and QC → R2.
-Quick mode (`envelope.quick`, set by `/quick` or the web mode switch) requires a generated
-image. It defaults incompatible no-image actions to an information card and can fall back
-to a fact-based card when a requested source action cannot produce an image. All image flags,
-locale, density rules, configured writing rules/hooks and storage limits remain shared.
-Missing verified facts or failed QC blocks completion/approval rather than permitting invention.
-Image-only retries use the standard path, keep the post unchanged and revalidate source facts;
-old quick image prompts are never treated as factual evidence.
+Both modes use the standard intake, writing prompts, configured rules and image settings.
+Quick mode (`envelope.quick`) automatically delivers a post and image without manual review:
+`quick_card.source_packet` supplies verbatim source excerpts instead of model fact approval,
+image QC is skipped, provider calls retry automatically and failures fall back to a locally
+rendered information card. Local cards are not labeled AI-generated. Diagnostics are stored internally; only technical failures (e.g. permanent storage failure) stop delivery. Standard
+mode retains its existing fact verification, image QC and review behavior. Image-only jobs
+keep the post unchanged and follow the original task's mode.
 
 `pipeline/links.py` runs first in both modes and channels: it picks URLs
 (`links_to_read`), reads them through `services/link_reader.LinkReader`, and appends each page

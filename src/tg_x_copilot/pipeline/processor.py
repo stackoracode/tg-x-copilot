@@ -43,6 +43,7 @@ from .overlays import (approved_regions, wants_region_edit, crop_region, composi
 from .image_qc import QCMode, build_messages, qc_verdict
 from .links import attach_linked_pages
 from .quick import strip_command
+from .quick_card import render_card, source_packet
 from .media import ImageBlob, graphic_hint, inspect_image, optimize_image
 from .triage import build_questions, build_state, decide_route, has_usable_text, without_jev
 
@@ -259,11 +260,10 @@ class Pipeline:
         # 3. Only now, with a draft in hand, persist what the operator needs.
         await repo.set_stage(task_id, "persist")
         await self._ensure_media_rows(task_id, env, images, outcomes, analyses)
-        media_results = await self._persist(task_id, images, outcomes, analyses, cfg, locale=locale.code)
+        media_results = await self._persist(task_id, images, outcomes, analyses, cfg, locale=locale.code, automatic=env.quick)
 
         problems = list(report.problems)  # blocking: cannot be approved
-        if env.quick and not any(r.asset_kind == "final" and r.ai_generated for r in media_results):
-            problems.append(t(env.locale, "quick_image_missing"))
+        image_missing = env.quick and not any(r.asset_kind == "final" for r in media_results)
         review = list(report.review)  # must be checked by a human, then may be approved
         if not env.is_direct and triage.route == "review":
             review.append(t(env.locale, "jev_review", reason=" ".join(triage.reasons)))
@@ -280,8 +280,14 @@ class Pipeline:
         else:
             status = (TaskStatus.DRAFT_READY if not problems and not review
                       else TaskStatus.NEEDS_REVIEW)
+        automatic_diagnostics = problems + review if env.quick else []
+        if env.quick:
+            # Keep diagnostics internally; do not turn them into manual-review instructions.
+            problems, review = [], []
+            status = TaskStatus.FAILED if image_missing else TaskStatus.DRAFT_READY
         meta = {
             "quick": env.quick,
+            "automatic_diagnostics": automatic_diagnostics,
             "image_brief": rewrite.image_brief,
             "verified_facts": packet.model_dump(mode="json"),
             "canonical_text": env.text,
@@ -289,7 +295,7 @@ class Pipeline:
             "image_action": env.image_action.value if env.image_action else None,
             "image_options": env.image_options.model_dump(mode="json"),
             "image_locale": env.image_options.target_locale or env.locale,
-            "text_review": text_review,
+            "text_review": [] if env.quick else text_review,
             "text_warnings": report.warnings + dup_warnings,
             "hook": rewrite.hook,
             "claims": [c.model_dump() for c in rewrite.claims],
@@ -653,6 +659,9 @@ class Pipeline:
 
     async def _fact_packet(self, task_id: str, env: InputEnvelope,
                            analyses: dict[int, ImageAnalysis]) -> tuple[VerifiedFacts, list[str]]:
+        if env.quick:
+            # Quick delivery uses exact source material, not a model-generated fact gate.
+            return source_packet(env, analyses), []
         try:
             return await build_verified_facts(env, analyses, self.app), []
         except asyncio.CancelledError:
@@ -689,6 +698,8 @@ class Pipeline:
                                    locale: Locale, cfg: AppSettings, **kwargs: Any
                                    ) -> list[ImageOutcome]:
         """Apply the same image pipeline, with a fact-based fallback for quick tasks."""
+        if env.quick:
+            kwargs["max_images"] = max(1, kwargs.get("max_images", 4))
         outcomes = await self._process_images(task_id, env, images, analyses, rewrite,
                                               evaluation, locale, cfg, **kwargs)
         if (env.quick and kwargs.get("only_indices") is None
@@ -701,6 +712,19 @@ class Pipeline:
             fallback_kwargs = {**kwargs, "only_indices": None}
             outcomes = await self._process_images(task_id, env, [], analyses, rewrite,
                                                   evaluation, locale, cfg, **fallback_kwargs)
+        if env.quick and not any(o.output is not None for o in outcomes):
+            packet = kwargs.get("verified_facts") or source_packet(env, analyses)
+            raw = await asyncio.to_thread(render_card, rewrite.post, packet,
+                density=env.image_options.information_density, size=cfg.models.image_size,
+                locale=env.image_options.target_locale or env.locale)
+            blob = await asyncio.to_thread(self._optimize, raw, True, cfg)
+            idx = len(env.media)
+            outcomes = [ImageOutcome(i, ImageDecision.OMIT, t(env.locale, "image_action_omit"))
+                        for i in range(len(env.media))]
+            outcomes.append(ImageOutcome(idx, ImageDecision.INFO_CARD,
+                            t(env.locale, "quick_card_fallback"), blob, ai_generated=False))
+            env.image_action = ImageAction.INFO_CARD
+            await self._event(task_id, "quick", "image provider unavailable; source information card rendered automatically")
         return outcomes
 
     async def _process_images(self, task_id: str, env: InputEnvelope, images: list[LoadedImage],
@@ -764,7 +788,7 @@ class Pipeline:
                     if not packet.facts and not packet_attempted:
                         packet_attempted = True
                         packet, _ = await self._fact_packet(task_id, env, analyses)
-            if mode != "promotion_cleanup" and not packet.facts:
+            if mode != "promotion_cleanup" and not packet.facts and not env.quick:
                 return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "image_facts_unavailable"),
                                     failure_stage=MediaFailureStage.IMAGE_POLICY)
             regions: list[MarkRegion] = []
@@ -784,7 +808,7 @@ class Pipeline:
                 except ValueError:
                     return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "cleanup_scope_required"),
                                         failure_stage=MediaFailureStage.IMAGE_POLICY)
-            attempts = 2 if (execution == "create" and mode == "regenerate") else 1
+            attempts = 3 if env.quick else (2 if (execution == "create" and mode == "regenerate") else 1)
             feedback = ""
             for attempt in range(1, attempts + 1):
                 try:
@@ -801,7 +825,8 @@ class Pipeline:
                         output = await asyncio.to_thread(composite_patches, reference.blob.data, regions, patches)
                     else:
                         prompt = render_image(chosen, reference) + feedback
-                        async with limits.image:
+                        async with limits.image, asyncio.timeout(
+                                min(cfg.cpa.timeout_seconds, 120.0) if env.quick else None):
                             if execution == "edit":
                                 raw = await hub.cpa.images_edit(m.image_model, prompt, reference.blob.data,
                                     reference.blob.mime, size=m.image_size, mode=m.image_edit_mode)
@@ -815,8 +840,14 @@ class Pipeline:
                 except Exception as exc:
                     log.exception("image execution failed")
                     await self._event(task_id, "IMAGE2", f"image {idx}: processing failed", level="warning")
+                    if env.quick and attempt < attempts:
+                        await self._event(task_id, "quick", "automatically retrying image provider", level="warning")
+                        continue
                     return ImageOutcome(idx, ImageDecision.REVIEW, t(ui_locale, "media_stage_image2") + " " + media_error_reason(exc, ui_locale),
                                         failure_stage=MediaFailureStage.IMAGE2)
+                if env.quick:
+                    await self._event(task_id, "quick", "image ready; quick mode does not require image review")
+                    return ImageOutcome(idx, decision, reason, output, ai_generated=True)
                 ref_text = (analyses[reference.idx].extracted_text if reference and reference.idx in analyses
                             else "\n".join(a.extracted_text for a in analyses.values() if a.extracted_text))
                 passed, qc_reason = await self._qc(env, locale, cfg, mode, output, reference,
@@ -926,7 +957,7 @@ class Pipeline:
             fact_warnings = []
             if (not wants_region_edit(env.image_action, env.image_options) and
                 (env.quick or spec is None or spec.execution in ("edit", "create")) and
-                not packet_is_traceable(packet, env.text, sources)):
+                (env.quick or not packet_is_traceable(packet, env.text, sources))):
                 # Fresh facts may use persisted source OCR, never old editorial background.
                 packet, fact_warnings = await self._fact_packet(task_id, env, {**sources, **analyses})
             rules_dict = {**prompts.render_json("knowledge", locale.code)["rules"],
@@ -949,7 +980,7 @@ class Pipeline:
                 await self.app.storage.release_task(task_id, indices=only_indices)
             await self._ensure_media_rows(task_id, env, images, outcomes, analyses, only_indices=only_indices)
             results = await self._persist(task_id, images, outcomes, analyses, cfg,
-                                         locale=env.locale)
+                                         locale=env.locale, automatic=env.quick)
             if only_indices is not None:
                 combined = {r["idx"]: r for r in meta.get("media") or [] if r["idx"] not in only_indices}
                 combined.update({r.idx: r.model_dump(mode="json") for r in results})
@@ -969,17 +1000,15 @@ class Pipeline:
                 image_locale=env.image_options.target_locale or env.locale, review=review,
                 text_review=text_review, warnings=list(meta.get("text_warnings", meta.get("warnings") or []))
                 + warnings + fact_warnings, media=merged_media)
+            status = TaskStatus.NEEDS_REVIEW if review or meta.get("problems") else TaskStatus.DRAFT_READY
             if env.quick:
                 meta["quick"] = True
-                meta.pop("image_prompt", None)  # obsolete free-form prompt from legacy quick drafts
+                meta.pop("image_prompt", None)
                 meta.pop("alt_text", None)
-                # Clear only this workflow's missing-image blocker after a successful retry.
-                missing = t(env.locale, "quick_image_missing")
-                problems = [p for p in meta.get("problems", []) if p != missing]
-                if not any(r.get("asset_kind") == "final" and r.get("ai_generated") for r in merged_media):
-                    problems.append(missing)
-                meta["problems"] = problems
-            status = TaskStatus.NEEDS_REVIEW if review or meta.get("problems") else TaskStatus.DRAFT_READY
+                meta["automatic_diagnostics"] = review + list(meta.get("problems") or [])
+                meta["problems"], meta["review"], meta["text_review"] = [], [], []
+                status = (TaskStatus.DRAFT_READY if any(r.get("asset_kind") == "final" for r in merged_media)
+                          else TaskStatus.FAILED)
             if not await self._save_result(task_id, status, task["draft_text"], meta):
                 return
             await self._event(task_id, "images", "image-only job finished; draft unchanged")
@@ -1047,7 +1076,7 @@ class Pipeline:
 
     async def _persist(self, task_id: str, images: list[LoadedImage],
                        outcomes: list[ImageOutcome], analyses: dict[int, ImageAnalysis],
-                       cfg: AppSettings, *, locale: str = "en-US") -> list[MediaResult]:
+                       cfg: AppSettings, *, locale: str = "en-US", automatic: bool = False) -> list[MediaResult]:
         """Upload final assets (and optional compressed review copies) to R2, deduplicated."""
         by_idx = {img.idx: img for img in images}
         results: list[MediaResult] = []
@@ -1062,7 +1091,16 @@ class Pipeline:
             try:
                 if o.output is not None and decision != ImageDecision.REVIEW and failure_stage is None:
                     kind = "final"
-                    key = await self.app.storage.persist(task_id, o.idx, o.output, kind)
+                    for upload_attempt in range(3 if automatic else 1):
+                        try:
+                            key = await self.app.storage.persist(task_id, o.idx, o.output, kind)
+                            break
+                        except StorageBudgetExceeded:
+                            raise
+                        except Exception:
+                            if not automatic or upload_attempt == 2:
+                                raise
+                            await self._event(task_id, "R2_UPLOAD", "automatically retrying image upload", level="warning")
                 elif decision == ImageDecision.REVIEW and cfg.storage.persist_review_media:
                     copy = o.review_blob
                     if copy is None and o.idx in by_idx:

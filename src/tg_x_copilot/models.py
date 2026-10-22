@@ -113,7 +113,7 @@ class InputEnvelope(BaseModel):
     image_retry_indices: list[int] | None = None
     image_edit_authorizations: dict[str, ImageEditAuthorization] = Field(default_factory=dict)
     is_direct: bool = False  # True when sent directly by operator (not forwarded)
-    # Quick create: standard rules and checks, with a required generated image.
+    # Quick create: standard content settings with automatic image delivery, no review gate.
     # Kept on the envelope so regenerate / image re-runs retain this requirement.
     quick: bool = False
     quick_instructions: str = ""  # optional style direction, shared by both workflows
